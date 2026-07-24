@@ -14,7 +14,7 @@ A polyfill/ponyfill for the [VirtualKeyboard API](https://developer.mozilla.org/
 | 2 | Shape | Ponyfill core + opt-in global patch | Best practice (cf. resize-observer-polyfill); no surprise globals |
 | 3 | Runtime deps | Zero | It's a polyfill |
 | 4 | Tooling | TypeScript strict, Bun for dev/test (`bun test` + happy-dom), tsup for build (ESM + CJS + d.ts) | Cam's stack (Bun/TS); tsup is boring and reliable |
-| 5 | CSS strategy | JS sets `--keyboard-inset-*` custom props on `:root`; PostCSS plugin rewrites `env()` to include a `var()` fallback | `env()` cannot be defined from JS, period. Fallback chain keeps native Chrome behavior intact (see below) |
+| 5 | CSS strategy | JS sets `--keyboard-inset-*` custom props on `:root`; authors hand-write the `env(..., var(...))` fallback chain (PostCSS plugin dropped by owner) | `env()` cannot be defined from JS, period. Fallback chain keeps native Chrome behavior intact (see below) |
 | 6 | `show()` | Best-effort refocus of active editable; silent no-op otherwise | iOS gesture restrictions make full spec impossible |
 | 7 | `hide()` | `document.activeElement.blur()` when editable focused | Works everywhere |
 | 8 | `overlaysContent` | Stored getter/setter; `true` is a no-op on Safari (already the behavior); `false` unsupported, documented | Can't resize Safari's layout viewport reliably |
@@ -27,7 +27,6 @@ A polyfill/ponyfill for the [VirtualKeyboard API](https://developer.mozilla.org/
 ```
 virtual-keyboard-api-polyfill          → ponyfill: createVirtualKeyboard(options?), types
 virtual-keyboard-api-polyfill/auto     → side-effect: installs navigator.virtualKeyboard if missing + starts CSS custom props
-virtual-keyboard-api-polyfill/postcss  → PostCSS plugin (postcss is optional peer dep)
 ```
 
 - `createVirtualKeyboard()` returns the **native** `navigator.virtualKeyboard` when present (passthrough), else a `VirtualKeyboardPolyfill` instance.
@@ -57,16 +56,15 @@ Signal source: `visualViewport` `resize` + `scroll`, `focusin`/`focusout` on doc
 7. **CSS custom properties**: when enabled (default in `/auto`; option `cssProperties: boolean` in ponyfill, default `true` when installed globally, `false` for bare ponyfill unless opted in), write `--keyboard-inset-top/right/bottom/left/width/height` (px strings) to `document.documentElement.style` on every rect change. Values mirror what native `env(keyboard-inset-*)` would expose with `overlaysContent = true`: `top = y`, `bottom = 0`... **careful**: native semantics are insets from viewport edges: `keyboard-inset-top = y`, `keyboard-inset-bottom = 0` when docked... Verify against MDN during implementation: insets define the keyboard rectangle: `top`, `right`, `bottom`, `left` are distances such that the keyboard occupies the box. For a docked keyboard: `keyboard-inset-height = h`, `keyboard-inset-bottom = 0` is WRONG if it means distance from bottom... Implementation must match MDN's definition (`keyboard-inset-height` ≈ height; insets are from the layout viewport edges to the keyboard box: left=0, right=0, bottom=0, top=innerHeight - h). Write a unit test asserting `height = top→bottom consistency`.
 8. **No listeners until first use**: ponyfill starts listeners on construction; `dispose()` tears down. `/auto` constructs eagerly (that's its point).
 
-## PostCSS plugin
+## CSS usage pattern (PostCSS plugin dropped by owner decision, 2026-07-24)
 
-Transform, for X ∈ {top,right,bottom,left,width,height}:
+No build-time tooling. Authors write the fallback chain by hand, for X ∈ {top,right,bottom,left,width,height}:
 
-- `env(keyboard-inset-X)` → `env(keyboard-inset-X, var(--keyboard-inset-X, 0px))`
-- `env(keyboard-inset-X, FALLBACK)` → `env(keyboard-inset-X, var(--keyboard-inset-X, FALLBACK))`
+```css
+bottom: env(keyboard-inset-X, var(--keyboard-inset-X, FALLBACK));
+```
 
-Why this shape: browsers with native support resolve `env()` directly (custom property ignored — no double-compensation); browsers without it use the fallback, which resolves to the polyfill's custom property; if JS never ran, the original FALLBACK (or 0px) still applies. Must handle: multiple env() in one declaration, nested parens in fallbacks, case-insensitivity, already-transformed values (idempotency — skip if fallback already starts with `var(--keyboard-inset-`).
-
-Plugin options: `{ properties?: string[] }` (default all six). Keep it minimal.
+Why this shape: browsers with native support resolve `env()` directly (custom property ignored — no double-compensation); browsers without it use the fallback, which resolves to the polyfill's custom property; if JS never ran, the original FALLBACK (or 0px) still applies. Document this pattern prominently in the README.
 
 ## Tests (bun test + happy-dom)
 

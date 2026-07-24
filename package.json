@@ -43,16 +43,6 @@
         "types": "./dist/auto.d.cts",
         "default": "./dist/auto.cjs"
       }
-    },
-    "./postcss": {
-      "import": {
-        "types": "./dist/postcss.d.ts",
-        "default": "./dist/postcss.js"
-      },
-      "require": {
-        "types": "./dist/postcss.d.cts",
-        "default": "./dist/postcss.cjs"
-      }
     }
   },
   "main": "./dist/index.cjs",
@@ -66,18 +56,9 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
-  "peerDependencies": {
-    "postcss": "^8.4.0"
-  },
-  "peerDependenciesMeta": {
-    "postcss": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "happy-dom": "^20.11.1",
-    "postcss": "^8.5.23",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   }

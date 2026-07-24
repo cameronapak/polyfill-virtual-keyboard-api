@@ -4,7 +4,6 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     auto: "src/auto.ts",
-    postcss: "src/postcss.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
