@@ -2,7 +2,7 @@
 
 Safari chat-UI readiness: keep a fixed/sticky bottom composer above the keyboard without inventing a second geometry engine.
 
-This is **not** the VirtualKeyboard polyfill. Height comes only from `navigator.virtualKeyboard` / this package’s ponyfill (`boundingRect`, `geometrychange`, `--keyboard-inset-*`). Layout shell, pre-lift, and focus timing are Recipe concerns.
+This is **not** the VirtualKeyboard polyfill. Pre-lift height follows the **Keyboard insets height channel** (`--keyboard-inset-height` / remainder) — the same number shell CSS uses — then falls back to `boundingRect.height`. Layout shell, pre-lift, and focus timing are Recipe concerns; do not re-measure `visualViewport`.
 
 Polyfill contract: [`SPEC.md`](../SPEC.md).
 
@@ -18,12 +18,14 @@ Insets alone (`bottom: env(keyboard-inset-height, …)`) are not enough. You nee
 
 ## Prerequisites
 
-1. Install the polyfill (or use native Chromium):
+1. Install the polyfill with CSS inset props (or use native Chromium):
 
    ```js
    import "virtual-keyboard-api-polyfill/auto";
    // or createVirtualKeyboard({ cssProperties: true })
    ```
+
+   On Safari / dual-metric engines, **`/auto` or `cssProperties: true` is required** so `--keyboard-inset-height` carries the remainder (layout bottom still covered). Without those props, the Recipe falls back to `boundingRect.height` (trueHeight) and can over-lift when Safari scroll-compensates.
 
 2. On Chromium, set `navigator.virtualKeyboard.overlaysContent = true` so native insets match the overlay model Safari already uses.
 
@@ -58,7 +60,7 @@ const { dispose } = attachIosComposer({
   // controls?: Iterable<HTMLElement> — send, attach, etc. (gated pre-lift)
   // virtualKeyboard?: { boundingRect, addEventListener, removeEventListener }
   // scrollTarget?: Window | Element — default window
-  // getHeight?: () => number — test seam only; default boundingRect.height
+  // getHeight?: () => number — test seam; default: --keyboard-inset-height, else boundingRect.height
 });
 
 // later
@@ -72,7 +74,7 @@ dispose();
 | Pre-lift | On field `mousedown`, apply last-known keyboard height to the composer **before** focus (defeats Safari’s pre-focus visibility scroll) |
 | Focus | `focus({ preventScroll: true })` + `preventDefault` on field `mousedown` |
 | Gated bar controls | On `controls`, pre-lift only when height &gt; 0 (no phantom lift when keyboard closed) |
-| Height cache | `geometrychange` → cache height; **do not** re-measure `visualViewport` |
+| Height cache | `geometrychange` → re-read height (inset channel first, then `boundingRect`); **do not** re-measure `visualViewport` |
 | Scroll safety net | While height &gt; 0, snap `scrollTarget` to top on scroll (globe key / mode switch has no DOM pre-lift) |
 
 Side-effect-free import: does **not** install the polyfill. Zero framework deps.
@@ -88,7 +90,7 @@ React hooks, parallel VV height APIs, device whitelists, CSS-in-JS, automatic mu
 ## Limitations (Recipe-only)
 
 - Requires author CSS shell; hooks alone will not fix a scrollable document
-- Not a VirtualKeyboard polyfill; without `/auto` or native VK + insets, height stays 0
+- Not a VirtualKeyboard polyfill; without `/auto` (or `cssProperties: true`) / native VK + inset props, pre-lift cannot follow the CSS remainder channel
 - Does not reimplement settle / VV math — lag and hard limits match the polyfill ([SPEC](../SPEC.md))
 - Pre-lift needs a prior non-zero height cache for first open after cold load (first focus may still jump once until `geometrychange` fills the cache)
 - Does not silently set global `overflow: hidden`

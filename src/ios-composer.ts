@@ -1,12 +1,12 @@
 /**
  * Vanilla iOS composer Recipe. Wires pre-lift, preventScroll focus, gated bar
- * controls, and scoped scroll lock. Reads keyboard height only from a
- * VirtualKeyboard-like source (default `navigator.virtualKeyboard`) — never
- * re-measures visualViewport.
+ * controls, and scoped scroll lock. Height for pre-lift follows the Keyboard
+ * insets channel (`--keyboard-inset-height` / remainder), falling back to
+ * `virtualKeyboard.boundingRect.height` — never re-measures visualViewport.
  *
  * Side-effect-free: does not install the polyfill. Callers use `/auto` or
- * `createVirtualKeyboard` first. SSR-safe to import; `attachIosComposer` only
- * touches DOM APIs when invoked with real elements.
+ * `createVirtualKeyboard({ cssProperties: true })` first. SSR-safe to import;
+ * `attachIosComposer` only touches DOM APIs when invoked with real elements.
  */
 
 export type VirtualKeyboardSource = {
@@ -22,11 +22,14 @@ export type AttachIosComposerOptions = {
   fields?: Iterable<HTMLElement>;
   /** Non-field controls that get gated pre-lift (send, attach, …). */
   controls?: Iterable<HTMLElement>;
-  /** Height + geometrychange source. Default: `navigator.virtualKeyboard`. */
+  /** geometrychange source (+ boundingRect fallback). Default: `navigator.virtualKeyboard`. */
   virtualKeyboard?: VirtualKeyboardSource;
   /** Scroll-lock target while keyboard height > 0. Default: `window`. */
   scrollTarget?: Window | Element;
-  /** Test seam for height. Default: `virtualKeyboard.boundingRect.height`. */
+  /**
+   * Test seam for height. Default: parse `--keyboard-inset-height` on
+   * `document.documentElement`, else `virtualKeyboard.boundingRect.height`.
+   */
   getHeight?: () => number;
 };
 
@@ -85,6 +88,24 @@ function defaultFields(composer: HTMLElement): HTMLElement[] {
   return out;
 }
 
+/** Parse `"300px"` / `"0px"`; null if missing, empty, or unparseable. */
+function parseCssPxLength(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^-?(?:\d+\.?\d*|\.\d+)px$/i.test(trimmed)) return null;
+  const n = Number.parseFloat(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
+function readInsetHeightFromDocument(): number | null {
+  if (typeof document === "undefined") return null;
+  const raw = document.documentElement?.style?.getPropertyValue("--keyboard-inset-height");
+  if (typeof raw !== "string") return null;
+  const parsed = parseCssPxLength(raw);
+  if (parsed === null) return null;
+  return Math.max(0, parsed);
+}
+
 function readHeight(
   vk: VirtualKeyboardSource | undefined,
   getHeight: (() => number) | undefined,
@@ -93,6 +114,8 @@ function readHeight(
     const h = getHeight();
     return Number.isFinite(h) ? Math.max(0, h) : 0;
   }
+  const fromCss = readInsetHeightFromDocument();
+  if (fromCss !== null) return fromCss;
   if (!vk) return 0;
   const h = vk.boundingRect.height;
   return Number.isFinite(h) ? Math.max(0, h) : 0;

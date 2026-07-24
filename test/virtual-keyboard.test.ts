@@ -156,7 +156,7 @@ describe("ongeometrychange property (add/remove semantics)", () => {
 });
 
 describe("cssProperties wiring", () => {
-  test("writes --keyboard-inset-* on rect change when enabled", () => {
+  test("writes --keyboard-inset-* on geometry commit when enabled", () => {
     const h = makeVK({ cssProperties: true });
     h.openKeyboard(300);
     expect(h.style.get("--keyboard-inset-height")).toBe("300px");
@@ -168,6 +168,36 @@ describe("cssProperties wiring", () => {
     const h = makeVK({ cssProperties: false });
     h.openKeyboard(300);
     expect(h.style.get("--keyboard-inset-height")).toBeUndefined();
+  });
+
+  test("dual metrics: scroll-compensated open → boundingRect height, CSS zeros", () => {
+    // Through the IDL seam: trueHeight on boundingRect, remainder on insets.
+    const vv = new FakeVisualViewport({ width: 390, height: 844 });
+    const win = new FakeWindow({
+      innerWidth: 390,
+      innerHeight: 844,
+      visualViewport: vv,
+      navigator: { maxTouchPoints: 5 },
+    });
+    const doc = new FakeDocument();
+    const vk = new VirtualKeyboardPolyfill({
+      window: win,
+      document: doc,
+      cssProperties: true,
+    });
+    win.flushRaf();
+    doc.activeElement = input();
+    doc.emit("focusin");
+    win.flushRaf();
+    // Full scroll compensation: VV shrinks and scrolls so remainder = 0.
+    vv.height = 844 - 300;
+    vv.offsetTop = 300;
+    vv.emit("resize");
+    win.flushRaf();
+    win.advanceTimers(80);
+    win.flushRaf();
+    expect(vk.boundingRect.height).toBe(300);
+    expect(doc.documentElement.style.get("--keyboard-inset-height")).toBe("0px");
   });
 });
 

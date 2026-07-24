@@ -42,7 +42,7 @@ virtual-keyboard-api-polyfill/ios-composer → Recipe (not polyfill) — see doc
 
 ## API surface + fidelity (v1)
 
-`VirtualKeyboardPolyfill extends EventTarget`:
+`VirtualKeyboardPolyfill extends EventTarget` is the deep IDL unit: one geometry **commit** updates `boundingRect`, syncs `--keyboard-inset-*` (when enabled), and fires `geometrychange`. Dual metrics (trueHeight vs remainder) are internal to that commit — not part of the public interface. Package root exports the IDL-shaped types + polyfill extras only (no Geometry-engine DI types).
 
 | Surface | v1 | Fidelity |
 | --- | --- | --- |

@@ -4,7 +4,7 @@ Terms for the Safari VirtualKeyboard polyfill effort. Vocabulary only — no imp
 
 ## Polyfill
 
-A stand-in for `navigator.virtualKeyboard` that mirrors the W3C VirtualKeyboard API shape on engines that lack the native API. Reports keyboard geometry and fires `geometrychange`; does not claim full UA power (e.g. cannot resize Safari's layout viewport).
+A stand-in for `navigator.virtualKeyboard` that mirrors the W3C VirtualKeyboard API shape on engines that lack the native API. Owns the IDL surface: `boundingRect`, Keyboard insets sync, `geometrychange`, `overlaysContent`, `show` / `hide`. Does not claim full UA power (e.g. cannot resize Safari's layout viewport).
 
 ## Native passthrough
 
@@ -12,7 +12,11 @@ When Chromium (or any engine) already implements `navigator.virtualKeyboard`, th
 
 ## Geometry engine
 
-The measurement core that derives keyboard occlusion from `visualViewport` and focus state, producing `boundingRect` and driving CSS inset custom properties.
+The measurement core that derives keyboard occlusion from `visualViewport` and focus state. Emits Dual metrics for the Polyfill to map onto the IDL surface; is not itself part of that surface.
+
+## Dual metrics
+
+The pair of heights for one keyboard state: physical occlusion (feeds `boundingRect`) and uncovered layout bottom (feeds Keyboard insets). Needed because Safari may scroll-compensate part of the keyboard, so the two can differ.
 
 ## Settle filter
 
@@ -28,7 +32,7 @@ App-facing guidance and optional helpers for a fixed bottom composer on iOS Safa
 
 ## attachIosComposer
 
-The v1 Recipe entrypoint (`virtual-keyboard-api-polyfill/ios-composer`): a vanilla function that wires pre-lift, preventScroll focus, gated bar controls, and scoped scroll lock onto a composer element, reading keyboard height only from `navigator.virtualKeyboard` (or an injected stand-in).
+The v1 Recipe entrypoint (`virtual-keyboard-api-polyfill/ios-composer`): a vanilla function that wires pre-lift, preventScroll focus, gated bar controls, and scoped scroll lock onto a composer element, reading keyboard height from the Keyboard insets height channel (same number CSS uses), with `navigator.virtualKeyboard` as the geometrychange / fallback source.
 
 ## Pre-lift
 

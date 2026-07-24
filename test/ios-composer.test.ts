@@ -194,6 +194,59 @@ describe("attachIosComposer", () => {
     expect(composer.style.bottom).toBe("");
   });
 
+  test("prefers --keyboard-inset-height over larger boundingRect.height", () => {
+    const vk = new FakeVK();
+    const { composer, field } = makeComposer(document);
+    document.documentElement.style.setProperty("--keyboard-inset-height", "220px");
+    vk.boundingRect = { height: 340 };
+
+    attachIosComposer({
+      composer,
+      fields: [field],
+      virtualKeyboard: vk,
+      scrollTarget: window as unknown as globalThis.Window,
+    });
+
+    expect(composer.style.bottom).toBe("220px");
+
+    document.documentElement.style.setProperty("--keyboard-inset-height", "180px");
+    vk.setHeight(400); // geometrychange; still prefer inset channel
+    expect(composer.style.bottom).toBe("180px");
+  });
+
+  test("falls back to boundingRect.height when --keyboard-inset-height absent", () => {
+    const vk = new FakeVK();
+    const { composer, field } = makeComposer(document);
+    document.documentElement.style.removeProperty("--keyboard-inset-height");
+
+    attachIosComposer({
+      composer,
+      fields: [field],
+      virtualKeyboard: vk,
+      scrollTarget: window as unknown as globalThis.Window,
+    });
+
+    vk.setHeight(310);
+    expect(composer.style.bottom).toBe("310px");
+  });
+
+  test("getHeight overrides both inset CSS var and boundingRect", () => {
+    const vk = new FakeVK();
+    const { composer, field } = makeComposer(document);
+    document.documentElement.style.setProperty("--keyboard-inset-height", "200px");
+    vk.boundingRect = { height: 350 };
+
+    attachIosComposer({
+      composer,
+      fields: [field],
+      virtualKeyboard: vk,
+      getHeight: () => 150,
+      scrollTarget: window as unknown as globalThis.Window,
+    });
+
+    expect(composer.style.bottom).toBe("150px");
+  });
+
   test("scroll lock snaps scrollTarget to top while height > 0", () => {
     const vk = new FakeVK();
     const { composer, field } = makeComposer(document);

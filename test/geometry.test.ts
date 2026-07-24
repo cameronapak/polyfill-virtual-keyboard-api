@@ -28,7 +28,7 @@ interface Harness {
   doc: FakeDocument;
   vv: FakeVisualViewport;
   rects: RectValue[];
-  /** Second onRectChange arg per report: the CSS-props remainder (Rule 2). */
+  /** Snapshot.remainder per commit: CSS-props remainder (Rule 2). */
   remainders: number[];
   engine: GeometryEngine;
   /** flush coalesced frames */
@@ -69,9 +69,9 @@ function setup(opts: {
   const engine = new GeometryEngine({
     win,
     doc,
-    onRectChange: (r, remainder) => {
-      rects.push({ ...r });
-      remainders.push(remainder);
+    onCommit: (snapshot) => {
+      rects.push({ ...snapshot.rect });
+      remainders.push(snapshot.remainder);
     },
   });
   engine.start();
@@ -138,7 +138,7 @@ function moveViewport(
 }
 
 describe("scenario 1: classic iOS Safari (innerHeight constant, vv shrinks)", () => {
-  test("reports occlusion rect and fires onRectChange", () => {
+  test("reports occlusion rect and fires onCommit", () => {
     const h = setup({ innerWidth: 390, innerHeight: 844 });
     focus(h, input());
     // At focus the viewport is full; occlusion is 0 -> still zeros.
@@ -444,7 +444,11 @@ describe("no viewport to measure", () => {
     });
     const doc = new FakeDocument();
     const rects: RectValue[] = [];
-    const engine = new GeometryEngine({ win, doc, onRectChange: (r) => rects.push({ ...r }) });
+    const engine = new GeometryEngine({
+      win,
+      doc,
+      onCommit: (snapshot) => rects.push({ ...snapshot.rect }),
+    });
     engine.start();
     win.flushRaf();
     doc.activeElement = input();

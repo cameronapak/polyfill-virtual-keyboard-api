@@ -1,7 +1,8 @@
 /**
- * `VirtualKeyboardPolyfill` — an EventTarget-based stand-in for the native
- * `navigator.virtualKeyboard`, mirroring the VirtualKeyboard API shape but
- * reporting geometry derived from `visualViewport` (see `geometry.ts`).
+ * `VirtualKeyboardPolyfill` — deep IDL-shaped stand-in for native
+ * `navigator.virtualKeyboard`. Owns one geometry commit step: update
+ * `boundingRect`, sync Keyboard insets, fire `geometrychange`. Dual metrics
+ * (trueHeight vs remainder) stay inside that step — not on the public interface.
  */
 
 import {
@@ -10,19 +11,20 @@ import {
   deepActiveElement,
   isEditableElement,
   type DocumentLike,
+  type GeometrySnapshot,
   type RectValue,
   type WindowLike,
 } from "./geometry.js";
 import { writeKeyboardInsetProps, type InsetViewport, type StyleTarget } from "./css-properties.js";
 
-export interface VirtualKeyboardPolyfillOptions {
+export type VirtualKeyboardPolyfillOptions = {
   /** Window-like source of geometry signals. Defaults to `globalThis.window`. */
   window?: WindowLike;
   /** Document-like source of focus/style. Defaults to `globalThis.document`. */
   document?: DocumentLike & StyleTarget;
-  /** Write `--keyboard-inset-*` custom properties on rect change. Default `false`. */
+  /** Write `--keyboard-inset-*` custom properties on geometry commit. Default `false`. */
   cssProperties?: boolean;
-}
+};
 
 type GeometryChangeHandler = ((this: VirtualKeyboardPolyfill, ev: Event) => unknown) | null;
 
@@ -67,27 +69,33 @@ export class VirtualKeyboardPolyfill extends EventTarget {
     this.#doc = resolveDocument(options.document);
     this.#cssProperties = options.cssProperties ?? false;
 
-    // Ponyfill starts listeners on construction (Rule 8). SSR-safe: without a
+    // Ponyfill starts listeners on construction. SSR-safe: without a
     // window/document the engine simply attaches nothing.
     if (this.#win && this.#doc) {
       this.#engine = new GeometryEngine({
         win: this.#win,
         doc: this.#doc,
-        onRectChange: (rect, remainder) => this.#handleRect(rect, remainder),
+        onCommit: (snapshot) => this.#commitGeometry(snapshot),
       });
       this.#engine.start();
     }
   }
 
-  // `rect` is the physical keyboard rectangle (boundingRect + geometrychange);
-  // `remainder` is the still-uncovered layout bottom that drives the CSS props
-  // (Rule 2 dual metrics). They can differ when the browser scroll-compensates.
-  #handleRect(rect: RectValue, remainder: number): void {
+  /**
+   * One UA-like geometry step: boundingRect → optional Keyboard insets →
+   * geometrychange. Remainder never leaves this method.
+   */
+  #commitGeometry(snapshot: GeometrySnapshot): void {
+    const { rect, remainder } = snapshot;
     this.#boundingRect = createDOMRectReadOnly(rect.x, rect.y, rect.width, rect.height);
-    if (this.#cssProperties && this.#doc && this.#win) {
-      writeKeyboardInsetProps(this.#doc, remainder, this.#win as InsetViewport);
-    }
+    this.#syncKeyboardInsets(remainder);
     this.dispatchEvent(new Event("geometrychange"));
+  }
+
+  /** Native-shaped inset sync: maps internal remainder onto `--keyboard-inset-*`. */
+  #syncKeyboardInsets(remainder: number): void {
+    if (!this.#cssProperties || !this.#doc || !this.#win) return;
+    writeKeyboardInsetProps(this.#doc, remainder, this.#win as InsetViewport);
   }
 
   get boundingRect(): DOMRectReadOnly {
@@ -99,8 +107,8 @@ export class VirtualKeyboardPolyfill extends EventTarget {
   }
 
   set overlaysContent(value: boolean) {
-    // Stored flag (decision 8). `true` is a no-op on Safari (already the
-    // behavior); `false` is unsupported and documented, but the value is kept.
+    // Stored flag. `true` is a no-op on Safari (already the behavior);
+    // `false` is unsupported and documented, but the value is kept.
     this.#overlaysContent = Boolean(value);
   }
 
@@ -118,7 +126,7 @@ export class VirtualKeyboardPolyfill extends EventTarget {
     }
   }
 
-  /** Best-effort refocus of the active editable; silent no-op otherwise (decision 6). */
+  /** Best-effort refocus of the active editable; silent no-op otherwise. */
   show(): undefined {
     if (!this.#doc) return undefined;
     const active = deepActiveElement(this.#doc);
@@ -132,7 +140,7 @@ export class VirtualKeyboardPolyfill extends EventTarget {
     return undefined;
   }
 
-  /** Blur the active editable when one is focused (decision 7). */
+  /** Blur the active editable when one is focused. */
   hide(): undefined {
     if (!this.#doc) return undefined;
     const active = deepActiveElement(this.#doc);

@@ -59,16 +59,23 @@ export interface DocumentLike {
   removeEventListener?(type: string, listener: (ev?: unknown) => void, options?: unknown): void;
 }
 
+/**
+ * One committed geometry update from the engine. Dual metrics stay here —
+ * callers (VirtualKeyboard) decide how to map them onto the IDL surface.
+ * `remainder` is never part of the public package interface.
+ */
+export type GeometrySnapshot = {
+  /** Physical keyboard rectangle → `boundingRect` / `geometrychange`. */
+  rect: RectValue;
+  /** Uncovered layout bottom (px) → CSS Keyboard insets only (Rule 2). */
+  remainder: number;
+};
+
 export interface GeometryEngineDeps {
   win: WindowLike;
   doc: DocumentLike;
-  /**
-   * Invoked when either reported metric changes. `rect` is the physical keyboard
-   * rectangle (drives boundingRect + geometrychange). `remainder` is the
-   * still-uncovered layout bottom in px (drives the CSS custom properties only).
-   * See the Rule 2 dual-metrics note.
-   */
-  onRectChange: (rect: RectValue, remainder: number) => void;
+  /** Invoked when either metric in the snapshot changes. */
+  onCommit: (snapshot: GeometrySnapshot) => void;
 }
 
 const ZERO_RECT: RectValue = { x: 0, y: 0, width: 0, height: 0 };
@@ -164,7 +171,7 @@ function rectsEqual(a: RectValue, b: RectValue): boolean {
 export class GeometryEngine {
   #win: WindowLike;
   #doc: DocumentLike;
-  #onRectChange: (rect: RectValue, remainder: number) => void;
+  #onCommit: (snapshot: GeometrySnapshot) => void;
 
   #started = false;
   #disposed = false;
@@ -202,7 +209,7 @@ export class GeometryEngine {
   constructor(deps: GeometryEngineDeps) {
     this.#win = deps.win;
     this.#doc = deps.doc;
-    this.#onRectChange = deps.onRectChange;
+    this.#onCommit = deps.onCommit;
   }
 
   get currentRect(): RectValue {
@@ -520,7 +527,7 @@ export class GeometryEngine {
     if (rectsEqual(rect, this.#lastRect) && remainder === this.#lastRemainder) return;
     this.#lastRect = rect;
     this.#lastRemainder = remainder;
-    this.#onRectChange(rect, remainder);
+    this.#onCommit({ rect, remainder });
   }
 
   #scheduleFrame(): void {

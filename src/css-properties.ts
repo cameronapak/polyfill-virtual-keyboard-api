@@ -80,7 +80,8 @@ export function computeInsets(remainder: number, viewport: InsetViewport): Keybo
 
 /**
  * Write `--keyboard-inset-{top,right,bottom,left,width,height}` (px strings) to
- * the document element whenever the remainder changes.
+ * the document element. Called only from VirtualKeyboard's geometry commit —
+ * not a public package seam.
  */
 export function writeKeyboardInsetProps(
   doc: StyleTarget,
