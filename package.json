@@ -1,6 +1,6 @@
 {
   "name": "virtual-keyboard-api-polyfill",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Polyfill/ponyfill for the VirtualKeyboard API, targeting Safari/iOS, Firefox, and WKWebView. Reports keyboard geometry via the standard API shape, computed from visualViewport.",
   "type": "module",
   "license": "MIT",
