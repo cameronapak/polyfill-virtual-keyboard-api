@@ -89,6 +89,9 @@ function setup(opts: {
   };
 }
 
+/** Height-stability filter delay (must match src/geometry.ts). */
+const HEIGHT_STABILITY_MS = 80;
+
 /** Focus an editable while the viewport is still full-height (captures baseline). */
 function focus(h: Harness, el: ElementLike): void {
   h.doc.activeElement = el;
@@ -96,24 +99,42 @@ function focus(h: Harness, el: ElementLike): void {
   h.frame();
 }
 
-/** Simulate the keyboard shrinking the visual viewport to `height`. */
-function shrinkViewport(h: Harness, height: number): void {
+/** Advance the 80ms height-stability timer and flush the commit frame. */
+function settleHeight(h: Harness): void {
+  h.win.advanceTimers(HEIGHT_STABILITY_MS);
+  h.frame();
+}
+
+/**
+ * Simulate the keyboard shrinking the visual viewport to `height`.
+ * By default waits for the height-stability filter to commit.
+ * Pass `{ settle: false }` to leave a pending candidate (stability tests).
+ */
+function shrinkViewport(h: Harness, height: number, opts: { settle?: boolean } = {}): void {
   h.vv.height = height;
   h.vv.emit("resize");
   h.frame();
+  if (opts.settle !== false) settleHeight(h);
 }
 
 /**
  * Simulate the visual viewport moving to `height`/`offsetTop` together, i.e. the
  * keyboard shrinks the viewport AND the browser scrolls it (iOS scroll
  * compensation). Fires both scroll and resize, coalesced into one frame.
+ * By default waits for the height-stability filter to commit.
  */
-function moveViewport(h: Harness, height: number, offsetTop: number): void {
+function moveViewport(
+  h: Harness,
+  height: number,
+  offsetTop: number,
+  opts: { settle?: boolean } = {},
+): void {
   h.vv.height = height;
   h.vv.offsetTop = offsetTop;
   h.vv.emit("scroll");
   h.vv.emit("resize");
   h.frame();
+  if (opts.settle !== false) settleHeight(h);
 }
 
 describe("scenario 1: classic iOS Safari (innerHeight constant, vv shrinks)", () => {
@@ -145,6 +166,7 @@ describe("scenario 2: WKWebView both-shrink (innerHeight AND vv.height shrink)",
     h.win.emit("resize"); // height-only window resize
     h.vv.emit("resize");
     h.frame();
+    settleHeight(h);
 
     const r = h.last();
     expect(r.height).toBe(300); // baseline 844 - vv 544
@@ -175,15 +197,14 @@ describe("scenario 3: pinch-zoom guard (revised - guard on scale CHANGE)", () =>
     h.vv.height = 700;
     h.win.flushTimers();
     h.frame();
+    settleHeight(h); // focused zero still waits on height-stability
     // Re-baselined against the current (keyboard-free) geometry -> occlusion 0.
     // The pre-pinch 300px rect does NOT come back.
     expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
 
     // A subsequent shrink is measured against the NEW baseline (700), at the
     // stable non-1 scale, and reports occlusion normally again.
-    h.vv.height = 500;
-    h.vv.emit("resize");
-    h.frame();
+    shrinkViewport(h, 500);
     expect(h.last().height).toBe(200); // 700 - 500, against the new baseline
   });
 
@@ -253,6 +274,7 @@ describe("post-spec: height-only window resize does NOT re-baseline", () => {
     h.win.emit("resize"); // width unchanged -> must NOT re-baseline
     h.vv.emit("resize");
     h.frame();
+    settleHeight(h);
 
     expect(h.last().height).toBe(344); // 844 - 500, baseline preserved
     // No settle timer was scheduled (no re-baseline requested).
@@ -284,6 +306,7 @@ describe("post-spec: width-changing resize DOES re-baseline after settle", () =>
     // so occlusion reads ~0 (documented rotation limitation).
     h.win.flushTimers();
     h.frame();
+    settleHeight(h);
     expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
   });
 });
@@ -552,6 +575,7 @@ describe("post-spec: full focus/blur/refocus lifecycle (browser regression)", ()
     // against the current (still-occluded, 544) geometry -> trueHeight 0.
     h.win.flushTimers();
     h.frame();
+    settleHeight(h);
     expect(h.win.pendingTimers()).toBe(0);
     expect(h.last().height).toBe(0); // fresh baseline against occluded geometry
 
@@ -559,6 +583,119 @@ describe("post-spec: full focus/blur/refocus lifecycle (browser regression)", ()
     // stable scale, and reports occlusion normally again.
     shrinkViewport(h, 500);
     expect(h.last().height).toBe(44); // 544 - 500, against the fresh baseline
+  });
+});
+
+describe("height stability filter (ticket 06)", () => {
+  test("oscillating height during open — no geometrychange until stable 80ms", () => {
+    const h = setup({ innerWidth: 390, innerHeight: 844 });
+    focus(h, input());
+    const before = h.rects.length;
+
+    // Mid-animation spikes: never hold a value for a full 80ms.
+    for (const height of [700, 400, 420, 410]) {
+      shrinkViewport(h, height, { settle: false });
+      h.win.advanceTimers(40); // < HEIGHT_STABILITY_MS — restarts pending
+      expect(h.rects.length).toBe(before);
+    }
+
+    // Plateau at 410 for ≥80ms → one commit (baseline 844 - 410 = 434).
+    shrinkViewport(h, 410, { settle: false });
+    expect(h.rects.length).toBe(before);
+    settleHeight(h);
+    expect(h.rects.length).toBe(before + 1);
+    expect(h.last().height).toBe(434);
+  });
+
+  test("emoji switch — second commit after new plateau", () => {
+    const h = setup({ innerWidth: 390, innerHeight: 844 });
+    focus(h, input());
+    shrinkViewport(h, 544); // commit h1 = 300
+    expect(h.last().height).toBe(300);
+    const afterFirst = h.rects.length;
+
+    // Switch toward emoji keyboard: spikes, then new plateau.
+    shrinkViewport(h, 500, { settle: false });
+    h.win.advanceTimers(40);
+    shrinkViewport(h, 480, { settle: false });
+    h.win.advanceTimers(40);
+    expect(h.rects.length).toBe(afterFirst); // no commit yet
+
+    shrinkViewport(h, 470, { settle: false }); // plateau h2 = 374
+    settleHeight(h);
+    expect(h.rects.length).toBe(afterFirst + 1);
+    expect(h.last().height).toBe(374);
+  });
+
+  test("dismiss while focused — zeros after stable ~0", () => {
+    const h = setup();
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+    const afterOpen = h.rects.length;
+
+    // Viewport returns with noise, then rests at baseline.
+    shrinkViewport(h, 820, { settle: false });
+    h.win.advanceTimers(40);
+    shrinkViewport(h, 844, { settle: false });
+    expect(h.rects.length).toBe(afterOpen);
+    expect(h.last().height).toBe(300); // last committed retained
+
+    settleHeight(h);
+    expect(h.rects.length).toBe(afterOpen + 1);
+    expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  test("resettle wins over stability — cancels pending commit", () => {
+    const h = setup({ innerWidth: 390, innerHeight: 844 });
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+    const afterOpen = h.rects.length;
+
+    // New candidate mid-timer (pending, not yet committed).
+    shrinkViewport(h, 400, { settle: false });
+    expect(h.win.pendingTimers()).toBeGreaterThan(0);
+    expect(h.rects.length).toBe(afterOpen);
+
+    // Orientation settle freezes and clears the height-stability pipeline.
+    h.win.innerWidth = 844;
+    h.win.innerHeight = 390;
+    h.vv.width = 844;
+    h.vv.height = 300;
+    h.win.emit("orientationchange");
+    h.frame();
+    expect(h.last().height).toBe(300); // frozen on last committed
+    expect(h.rects.length).toBe(afterOpen); // no commit from stale pending
+
+    // Advancing only the old 80ms window must not commit the cancelled candidate.
+    h.win.advanceTimers(HEIGHT_STABILITY_MS);
+    h.frame();
+    expect(h.rects.length).toBe(afterOpen);
+    expect(h.last().height).toBe(300);
+
+    // 300ms rebaseline path still runs afterward.
+    h.win.flushTimers();
+    h.frame();
+    settleHeight(h);
+    expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+  });
+
+  test("focusout clears immediately without waiting 80ms", () => {
+    const h = setup();
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+
+    // Start a new pending candidate, then blur before it can commit.
+    shrinkViewport(h, 400, { settle: false });
+    expect(h.last().height).toBe(300);
+
+    h.doc.activeElement = null;
+    h.doc.emit("focusout");
+    h.frame(); // immediate zeros — no advanceTimers
+    expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+    expect(h.win.pendingTimers()).toBe(0);
   });
 });
 

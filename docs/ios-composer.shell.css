@@ -1,0 +1,35 @@
+/* Optional copy-paste shell for the iOS composer Recipe.
+   Adapt selectors to your app. See docs/ios-composer.md. */
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.header {
+  flex: none;
+  touch-action: none;
+}
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.composer {
+  flex: none;
+  position: sticky;
+  bottom: env(keyboard-inset-height, var(--keyboard-inset-height, 0px));
+  touch-action: none;
+}

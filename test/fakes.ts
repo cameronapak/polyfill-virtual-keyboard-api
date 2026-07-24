@@ -4,9 +4,11 @@
  * surfaces are intentionally minimal, so we implement only what it reads.
  *
  * Timing is manual: `requestAnimationFrame` and `setTimeout` queue callbacks
- * instead of firing. Call `flushRaf()` to run coalesced frames and
- * `flushTimers()` to run the 300ms settle timer. This lets tests reproduce the
- * "many events, one frame" coalescing the engine relies on.
+ * instead of firing. Call `flushRaf()` to run coalesced frames,
+ * `advanceTimers(ms)` to run due timers (e.g. the 80ms height-stability filter),
+ * and `flushTimers()` to run every pending timer (e.g. the 300ms re-baseline).
+ * This lets tests reproduce the "many events, one frame" coalescing the engine
+ * relies on.
  */
 
 import type {
@@ -84,7 +86,8 @@ export class FakeDocument extends Emitter implements DocumentLike, StyleTarget {
 interface Timer {
   id: number;
   cb: () => void;
-  ms: number;
+  /** Absolute virtual time when this timer should fire. */
+  fireAt: number;
 }
 
 export class FakeWindow extends Emitter implements WindowLike {
@@ -99,6 +102,8 @@ export class FakeWindow extends Emitter implements WindowLike {
   private rafQueue: Array<() => void> = [];
   private timers: Timer[] = [];
   private nextTimerId = 1;
+  /** Virtual clock for `advanceTimers` / delayed setTimeout. */
+  private now = 0;
 
   // These four are installed in the constructor as receiver-checked functions
   // (see below). setTimeout/clearTimeout are always present; the rAF pair is
@@ -137,7 +142,7 @@ export class FakeWindow extends Emitter implements WindowLike {
     this.setTimeout = function (this: unknown, cb: () => void, ms?: number): number {
       if (this !== self) illegal();
       const id = self.nextTimerId++;
-      self.timers.push({ id, cb, ms: ms ?? 0 });
+      self.timers.push({ id, cb, fireAt: self.now + (ms ?? 0) });
       return id;
     };
     this.clearTimeout = function (this: unknown, handle: unknown): void {
@@ -159,7 +164,7 @@ export class FakeWindow extends Emitter implements WindowLike {
   }
 
   /** Run every queued animation frame (and, when rAF is disabled, timer-backed
-   *  frames scheduled with delay 0). */
+   *  frames that are already due). */
   flushRaf(): void {
     if (this.useRaf) {
       const q = this.rafQueue;
@@ -168,16 +173,49 @@ export class FakeWindow extends Emitter implements WindowLike {
       return;
     }
     // rAF disabled: frames were scheduled via setTimeout(cb, 0).
-    const zero = this.timers.filter((t) => t.ms === 0);
-    this.timers = this.timers.filter((t) => t.ms !== 0);
-    for (const t of zero) t.cb();
+    const due = this.timers.filter((t) => t.fireAt <= this.now);
+    const dueIds = new Set(due.map((t) => t.id));
+    this.timers = this.timers.filter((t) => !dueIds.has(t.id));
+    for (const t of due) t.cb();
+  }
+
+  /**
+   * Advance the virtual clock by `ms` and run every timer whose fire time is
+   * now due (in fire-time order). Timers scheduled during a callback use the
+   * advanced clock as their origin.
+   */
+  advanceTimers(ms: number): void {
+    const target = this.now + ms;
+    while (this.timers.length > 0) {
+      let next: Timer | null = null;
+      for (const t of this.timers) {
+        if (t.fireAt > target) continue;
+        if (!next || t.fireAt < next.fireAt || (t.fireAt === next.fireAt && t.id < next.id)) {
+          next = t;
+        }
+      }
+      if (!next) break;
+      this.now = next.fireAt;
+      this.timers = this.timers.filter((t) => t.id !== next!.id);
+      next.cb();
+    }
+    this.now = target;
   }
 
   /** Run every pending timer (e.g. the 300ms re-baseline settle). */
   flushTimers(): void {
-    const all = this.timers;
-    this.timers = [];
-    for (const t of all) t.cb();
+    while (this.timers.length > 0) {
+      let next: Timer | null = null;
+      for (const t of this.timers) {
+        if (!next || t.fireAt < next.fireAt || (t.fireAt === next.fireAt && t.id < next.id)) {
+          next = t;
+        }
+      }
+      if (!next) break;
+      this.now = next.fireAt;
+      this.timers = this.timers.filter((t) => t.id !== next!.id);
+      next.cb();
+    }
   }
 
   pendingTimers(): number {

@@ -79,6 +79,10 @@ const HIDE_THRESHOLD_PX = 1;
 const PINCH_EPSILON = 0.01;
 /** Rule 4: settle delay before re-capturing baseline after resize/orientation. */
 const SETTLE_DELAY_MS = 300;
+/** Height must stay within epsilon this long before a geometry commit. */
+const HEIGHT_STABILITY_MS = 80;
+/** Max px drift of trueHeight/remainder still treated as the same candidate. */
+const HEIGHT_EPSILON_PX = 1;
 
 /** input `type` values that never summon a text keyboard. `select` is excluded entirely. */
 const NON_EDITABLE_INPUT_TYPES = new Set([
@@ -188,6 +192,13 @@ export class GeometryEngine {
   /** Rule 4: last-seen innerWidth, to distinguish rotation from height-only resizes. */
   #lastInnerWidth = 0;
 
+  /** Height-stability pipeline: candidate waiting for HEIGHT_STABILITY_MS. */
+  #pendingTrueHeight: number | null = null;
+  #pendingRemainder: number | null = null;
+  #stabilityHandle: unknown = null;
+  /** Set when the stability timer fires; next matching frame commits. */
+  #awaitingStabilityCommit = false;
+
   constructor(deps: GeometryEngineDeps) {
     this.#win = deps.win;
     this.#doc = deps.doc;
@@ -233,6 +244,7 @@ export class GeometryEngine {
 
     this.#cancelFrame();
     this.#cancelSettle();
+    this.#clearPendingStability();
   }
 
   #onViewportChange = (): void => {
@@ -275,6 +287,8 @@ export class GeometryEngine {
   #requestRebaseline(reason: "scale" | "geometry"): void {
     if (this.#baselineHeight === null) return;
     this.#cancelSettle();
+    // Stale height-stability candidates must not commit while frozen.
+    this.#clearPendingStability();
     // Snapshot the frozen state at request time. The baselines are not mutated
     // while frozen, so repeated wobble frames that restart the settle re-capture
     // the SAME original baselines rather than an occluded mid-animation value.
@@ -330,6 +344,7 @@ export class GeometryEngine {
     // an input focused. Unreadable maxTouchPoints -> assume touch-capable.
     if (!this.#isTouchCapable()) {
       this.#clearBaselines();
+      this.#clearPendingStability();
       this.#report(ZERO_RECT, 0);
       return;
     }
@@ -340,7 +355,9 @@ export class GeometryEngine {
 
     if (!editable || !vv) {
       // No editable focused (or no viewport to measure) -> keyboard is not ours to report.
+      // Immediate zeros: no 80ms wait on focusout / missing vv.
       this.#clearBaselines();
+      this.#clearPendingStability();
       this.#report(ZERO_RECT, 0);
       return;
     }
@@ -358,6 +375,7 @@ export class GeometryEngine {
     }
 
     // Rule 4: while a resize/orientation settle is pending, freeze.
+    // Height-stability must not commit while resettling.
     if (this.#resettling) {
       return;
     }
@@ -383,23 +401,103 @@ export class GeometryEngine {
       Math.round((this.#baselineBottom ?? vv.height + vv.offsetTop) - vv.height - vv.offsetTop),
     );
 
-    // Rule 5: keyboard dismissed while still focused -> trueHeight ~0 -> report
-    // zeros (rect and remainder), but keep the baselines (still focused).
-    if (trueHeight < HIDE_THRESHOLD_PX) {
+    // Hide-threshold candidates: below 1px both metrics are treated as zero, but
+    // while still focused they still pass through the height-stability filter
+    // (focusout clears immediately above).
+    const candT = trueHeight < HIDE_THRESHOLD_PX ? 0 : trueHeight;
+    const candR = trueHeight < HIDE_THRESHOLD_PX ? 0 : remainder;
+
+    this.#applyHeightStability(candT, candR);
+  };
+
+  /**
+   * Delay `#report` until trueHeight/remainder stay within epsilon for
+   * HEIGHT_STABILITY_MS. Restarts on change; no-ops when candidates already
+   * match the last committed metrics.
+   */
+  #applyHeightStability(candT: number, candR: number): void {
+    // Already committed this geometry — do not re-arm the timer.
+    const sameMetrics = candT === this.#lastRect.height && candR === this.#lastRemainder;
+    const sameLayout =
+      candT === 0 ||
+      (this.#lastRect.width === this.#win.innerWidth &&
+        this.#lastRect.y === this.#win.innerHeight - candT);
+    if (sameMetrics && sameLayout) {
+      this.#clearPendingStability();
+      return;
+    }
+
+    const pendingChanged =
+      this.#pendingTrueHeight === null ||
+      Math.abs(candT - this.#pendingTrueHeight) > HEIGHT_EPSILON_PX ||
+      Math.abs(candR - (this.#pendingRemainder ?? 0)) > HEIGHT_EPSILON_PX;
+
+    if (pendingChanged) {
+      this.#pendingTrueHeight = candT;
+      this.#pendingRemainder = candR;
+      this.#awaitingStabilityCommit = false;
+      this.#restartStabilityTimer();
+      return;
+    }
+
+    if (!this.#awaitingStabilityCommit) {
+      // Still waiting for the stability timer; keep last committed rect.
+      return;
+    }
+
+    // Timer fired and candidates still match pending — commit once via this frame.
+    this.#awaitingStabilityCommit = false;
+    this.#pendingTrueHeight = null;
+    this.#pendingRemainder = null;
+    if (this.#stabilityHandle != null) {
+      this.#clearTimer(this.#stabilityHandle);
+      this.#stabilityHandle = null;
+    }
+
+    if (candT < HIDE_THRESHOLD_PX) {
       this.#report(ZERO_RECT, 0);
       return;
     }
 
-    // boundingRect per spec: {x:0, y: innerHeight - h, width: innerWidth, height: h}.
-    // x/y are documented approximations; height is the load-bearing value.
     const rect: RectValue = {
       x: 0,
-      y: this.#win.innerHeight - trueHeight,
+      y: this.#win.innerHeight - candT,
       width: this.#win.innerWidth,
-      height: trueHeight,
+      height: candT,
     };
-    this.#report(rect, remainder);
-  };
+    this.#report(rect, candR);
+  }
+
+  #restartStabilityTimer(): void {
+    if (this.#stabilityHandle != null) {
+      this.#clearTimer(this.#stabilityHandle);
+      this.#stabilityHandle = null;
+    }
+    try {
+      this.#stabilityHandle = this.#setTimer(() => {
+        this.#stabilityHandle = null;
+        if (this.#disposed || this.#resettling) {
+          this.#clearPendingStability();
+          return;
+        }
+        this.#awaitingStabilityCommit = true;
+        this.#scheduleFrame();
+      }, HEIGHT_STABILITY_MS);
+    } catch {
+      this.#stabilityHandle = null;
+      this.#awaitingStabilityCommit = false;
+    }
+  }
+
+  #clearPendingStability(): void {
+    this.#pendingTrueHeight = null;
+    this.#pendingRemainder = null;
+    this.#awaitingStabilityCommit = false;
+    if (this.#stabilityHandle != null) {
+      this.#clearTimer(this.#stabilityHandle);
+      this.#stabilityHandle = null;
+    }
+  }
 
   #clearBaselines(): void {
     this.#baselineBottom = null;

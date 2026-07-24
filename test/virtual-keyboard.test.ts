@@ -53,6 +53,9 @@ function makeVK(opts: { cssProperties?: boolean } = {}): VKHarness {
       vv.height = 844 - height;
       vv.emit("resize");
       win.flushRaf();
+      // Height-stability filter (80ms) must elapse before geometrychange commits.
+      win.advanceTimers(80);
+      win.flushRaf();
     },
     closeKeyboard() {
       doc.activeElement = null;

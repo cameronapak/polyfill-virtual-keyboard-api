@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     auto: "src/auto.ts",
+    "ios-composer": "src/ios-composer.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
