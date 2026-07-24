@@ -1,0 +1,84 @@
+{
+  "name": "virtual-keyboard-api-polyfill",
+  "version": "0.1.0",
+  "description": "Polyfill/ponyfill for the VirtualKeyboard API, targeting Safari/iOS, Firefox, and WKWebView. Reports keyboard geometry via the standard API shape, computed from visualViewport.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Cameron Pak",
+  "keywords": [
+    "virtual-keyboard",
+    "virtualkeyboard",
+    "polyfill",
+    "ponyfill",
+    "keyboard-inset",
+    "visualviewport",
+    "ios",
+    "safari",
+    "wkwebview"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": [
+    "./src/auto.ts",
+    "./dist/auto.*"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./auto": {
+      "import": {
+        "types": "./dist/auto.d.ts",
+        "default": "./dist/auto.js"
+      },
+      "require": {
+        "types": "./dist/auto.d.cts",
+        "default": "./dist/auto.cjs"
+      }
+    },
+    "./postcss": {
+      "import": {
+        "types": "./dist/postcss.d.ts",
+        "default": "./dist/postcss.js"
+      },
+      "require": {
+        "types": "./dist/postcss.d.cts",
+        "default": "./dist/postcss.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "postcss": "^8.4.0"
+  },
+  "peerDependenciesMeta": {
+    "postcss": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "happy-dom": "^20.11.1",
+    "postcss": "^8.5.23",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}
