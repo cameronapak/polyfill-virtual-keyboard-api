@@ -18,7 +18,7 @@
       A real device is required to see the keyboard geometry: desktop browsers
       report zeros by design (no touch keyboard, see Rule 4b).
     -->
-    <script type="module" src="../dist/auto.js"></script>
+    <script type="module" src="../dist/auto.js?v=4"></script>
 
     <style>
       :root {
@@ -341,10 +341,67 @@
           <dt>events</dt>
           <dd id="count">0</dd>
         </dl>
+        <h2>viewport</h2>
+        <pre id="vvdebug">-</pre>
+        <h2>vv transitions (scale/h/top/innerW)</h2>
+        <pre id="vvtrans">-</pre>
         <h2>event log</h2>
         <div class="log" id="log"></div>
       </div>
     </aside>
+
+    <script>
+      // Raw viewport diagnostics, independent of the polyfill wiring.
+      (function () {
+        const el = () => document.getElementById("vvdebug");
+        let jsError = null;
+        function render() {
+          if (jsError) {
+            el().textContent = "JS ERROR: " + jsError;
+            return;
+          }
+          const vv = window.visualViewport;
+          const active = document.activeElement;
+          el().textContent = [
+            "innerWH " + window.innerWidth + "x" + window.innerHeight,
+            vv
+              ? "vv " + Math.round(vv.width) + "x" + Math.round(vv.height) +
+                " top " + Math.round(vv.offsetTop) + " scale " + vv.scale.toFixed(3)
+              : "vv missing",
+            "touch " + navigator.maxTouchPoints,
+            "active " + (active ? active.tagName.toLowerCase() : "none"),
+            "kbInset " + getComputedStyle(document.documentElement).getPropertyValue("--keyboard-inset-height"),
+          ].join("\n");
+        }
+        setInterval(render, 400);
+        // rAF-speed sampler: records every distinct vv.scale/height/offsetTop
+        // transition so keyboard-animation wobbles are visible (400ms polling
+        // misses them). Kept to the last 12 transitions.
+        const transitions = [];
+        let last = "";
+        function sample() {
+          const vv = window.visualViewport;
+          if (vv) {
+            const sig = vv.scale.toFixed(4) + "/" + Math.round(vv.height) + "/" + Math.round(vv.offsetTop) + "/" + window.innerWidth;
+            if (sig !== last) {
+              last = sig;
+              transitions.push(new Date().toISOString().slice(14, 23) + " " + sig);
+              if (transitions.length > 12) transitions.shift();
+              const t = document.getElementById("vvtrans");
+              if (t) t.textContent = transitions.join("\n");
+            }
+          }
+          requestAnimationFrame(sample);
+        }
+        requestAnimationFrame(sample);
+        window.addEventListener("error", (e) => {
+          jsError = e.message;
+        });
+        window.addEventListener("unhandledrejection", (e) => {
+          jsError = "unhandled rejection: " + (e.reason && e.reason.message ? e.reason.message : e.reason);
+        });
+      })();
+    </script>
 
     <script type="module">
       // The /auto entry (loaded above) installs navigator.virtualKeyboard when

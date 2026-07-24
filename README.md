@@ -112,22 +112,31 @@ When the keyboard opens, the composer lifts by exactly the keyboard height on ev
 
 ### CSS custom properties reference
 
-All values are px strings on `document.documentElement`, written on every geometry change. They mirror the native `env(keyboard-inset-*)` variables for a docked keyboard with `overlaysContent = true`. All are `0px` while the keyboard is hidden.
+All values are px strings on `document.documentElement`, written on every change. They describe a bottom-docked band whose height is the remaining lift still needed (see [How values are reported on iOS](#how-values-are-reported-on-ios)), which equals the keyboard height on browsers that do not scroll-compensate. All are `0px` while the keyboard is hidden or already fully compensated.
 
 | Custom property | `env()` equivalent | Docked value | Meaning |
 | --- | --- | --- | --- |
-| `--keyboard-inset-top` | `keyboard-inset-top` | `innerHeight - height` | Distance from the top edge to the top of the keyboard box. |
-| `--keyboard-inset-right` | `keyboard-inset-right` | `0px` | Distance from the right edge to the keyboard box. |
-| `--keyboard-inset-bottom` | `keyboard-inset-bottom` | `0px` | Distance from the bottom edge to the keyboard box. |
-| `--keyboard-inset-left` | `keyboard-inset-left` | `0px` | Distance from the left edge to the keyboard box. |
-| `--keyboard-inset-width` | `keyboard-inset-width` | `innerWidth` | Width of the keyboard box. |
-| `--keyboard-inset-height` | `keyboard-inset-height` | keyboard height | Height of the keyboard box. This is the value most layouts want. |
+| `--keyboard-inset-top` | `keyboard-inset-top` | `innerHeight - height` | Distance from the top edge to the top of the band. |
+| `--keyboard-inset-right` | `keyboard-inset-right` | `0px` | Distance from the right edge to the band. |
+| `--keyboard-inset-bottom` | `keyboard-inset-bottom` | `0px` | Distance from the bottom edge to the band. |
+| `--keyboard-inset-left` | `keyboard-inset-left` | `0px` | Distance from the left edge to the band. |
+| `--keyboard-inset-width` | `keyboard-inset-width` | `innerWidth` | Width of the band. |
+| `--keyboard-inset-height` | `keyboard-inset-height` | remaining lift | Height of the band: the lift a bottom-fixed element still needs. This is the value most layouts want. |
 
-The insets satisfy `top + height + bottom === innerHeight` for a docked keyboard.
+The insets satisfy `top + height + bottom === innerHeight` for a docked band.
 
 ## How it works
 
-The engine listens to `visualViewport` `resize` and `scroll`, document `focusin` and `focusout`, and window `resize` and `orientationchange`, coalescing everything through `requestAnimationFrame`. Occlusion is only reported while a text-editable element is focused. At each `focusin` it captures a per-focus baseline (`visualViewport.height + visualViewport.offsetTop`) before the keyboard animates in, then reports `baseline - current viewport bottom` as the keyboard height. Capturing the baseline per focus rather than from `window.innerHeight` is what makes it correct in both classic iOS Safari (where `innerHeight` stays constant) and WKWebView/Capacitor (where `innerHeight` and the viewport shrink together).
+The engine listens to `visualViewport` `resize` and `scroll`, document `focusin` and `focusout`, and window `resize` and `orientationchange`, coalescing everything through `requestAnimationFrame`. Occlusion is only reported while a text-editable element is focused. At each `focusin` it captures a per-focus baseline before the keyboard animates in, then measures the shift against it. Capturing the baseline per focus rather than from `window.innerHeight` is what makes it correct in both classic iOS Safari (where `innerHeight` stays constant) and WKWebView/Capacitor (where `innerHeight` and the viewport shrink together).
+
+## How values are reported on iOS
+
+`boundingRect` / `geometrychange` and the `--keyboard-inset-*` custom properties intentionally measure two different things. This is a deliberate divergence from the native rule that the `env()` variables mirror `boundingRect` exactly, and it exists because iOS Safari sometimes scrolls the visual viewport to keep the focused field visible when the keyboard opens.
+
+- **`boundingRect` / `geometrychange` report the physical keyboard.** They give the actual on-screen keyboard height in CSS pixels, regardless of whether the browser scrolled the page to make room. This matches what native Chromium reports, so JS that reads `boundingRect.height` gets the real keyboard size everywhere.
+- **`--keyboard-inset-*` report only the remaining lift still needed.** If Safari already scrolled the viewport far enough that a bottom-fixed element is fully clear of the keyboard, the custom properties are `0px`, so `bottom: env(keyboard-inset-height, var(--keyboard-inset-height, 0px))` does not lift the element a second time. If Safari only partially compensated, the custom properties carry just the leftover gap.
+
+Concretely: iOS 26 Safari with page zoom shrank the visual viewport and scrolled it so the two summed back to the original layout height. A real keyboard of roughly 293px was up, so `boundingRect.height` reads ~293, but no additional lift was needed, so the custom properties read `0px`. Lifting by the full 293px there would have double-compensated. On WKWebView and any browser that does not scroll-compensate, there is nothing to subtract and the two metrics coincide.
 
 ## Limitations
 

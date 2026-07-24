@@ -28,10 +28,13 @@ interface Harness {
   doc: FakeDocument;
   vv: FakeVisualViewport;
   rects: RectValue[];
+  /** Second onRectChange arg per report: the CSS-props remainder (Rule 2). */
+  remainders: number[];
   engine: GeometryEngine;
   /** flush coalesced frames */
   frame(): void;
   last(): RectValue;
+  lastRemainder(): number;
 }
 
 function setup(opts: {
@@ -62,10 +65,14 @@ function setup(opts: {
   });
   const doc = new FakeDocument();
   const rects: RectValue[] = [];
+  const remainders: number[] = [];
   const engine = new GeometryEngine({
     win,
     doc,
-    onRectChange: (r) => rects.push({ ...r }),
+    onRectChange: (r, remainder) => {
+      rects.push({ ...r });
+      remainders.push(remainder);
+    },
   });
   engine.start();
   win.flushRaf(); // consume the seed frame
@@ -74,9 +81,11 @@ function setup(opts: {
     doc,
     vv,
     rects,
+    remainders,
     engine,
     frame: () => win.flushRaf(),
     last: () => rects[rects.length - 1] ?? { x: 0, y: 0, width: 0, height: 0 },
+    lastRemainder: () => remainders[remainders.length - 1] ?? 0,
   };
 }
 
@@ -90,6 +99,19 @@ function focus(h: Harness, el: ElementLike): void {
 /** Simulate the keyboard shrinking the visual viewport to `height`. */
 function shrinkViewport(h: Harness, height: number): void {
   h.vv.height = height;
+  h.vv.emit("resize");
+  h.frame();
+}
+
+/**
+ * Simulate the visual viewport moving to `height`/`offsetTop` together, i.e. the
+ * keyboard shrinks the viewport AND the browser scrolls it (iOS scroll
+ * compensation). Fires both scroll and resize, coalesced into one frame.
+ */
+function moveViewport(h: Harness, height: number, offsetTop: number): void {
+  h.vv.height = height;
+  h.vv.offsetTop = offsetTop;
+  h.vv.emit("scroll");
   h.vv.emit("resize");
   h.frame();
 }
@@ -130,25 +152,55 @@ describe("scenario 2: WKWebView both-shrink (innerHeight AND vv.height shrink)",
   });
 });
 
-describe("scenario 3: pinch-zoom guard", () => {
-  test("scale != 1 freezes updates", () => {
+describe("scenario 3: pinch-zoom guard (revised - guard on scale CHANGE)", () => {
+  test("genuine pinch freezes, then resumes through the settle re-baseline", () => {
     const h = setup();
-    focus(h, input());
+    focus(h, input()); // baseline = 844, baselineScale = 1 (captured at focus)
     shrinkViewport(h, 544);
     expect(h.last().height).toBe(300);
 
-    // Pinch to 2x, then shrink further: should be frozen (no new rect).
+    // A genuine pinch diverges vv.scale from the captured baseline scale.
+    // The engine freezes (keeps the last rect) and schedules a re-baseline.
     const before = h.rects.length;
-    h.vv.scale = 2;
-    shrinkViewport(h, 400);
-    expect(h.rects.length).toBe(before); // frozen
-    expect(h.last().height).toBe(300); // last rect retained
-
-    // Release zoom -> resumes.
-    h.vv.scale = 1;
+    h.vv.scale = 1.8;
     h.vv.emit("resize");
     h.frame();
-    expect(h.last().height).toBe(844 - 400);
+    expect(h.rects.length).toBe(before); // frozen: no new rect
+    expect(h.last().height).toBe(300); // last rect retained
+    expect(h.win.pendingTimers()).toBeGreaterThan(0); // settle scheduled
+
+    // The pinch stops at a new stable scale; the viewport now reports heights in
+    // the new CSS-pixel space. The 300ms settle fires and the engine re-captures
+    // BOTH baseline and baselineScale at the now-stable scale.
+    h.vv.height = 700;
+    h.win.flushTimers();
+    h.frame();
+    // Re-baselined against the current (keyboard-free) geometry -> occlusion 0.
+    // The pre-pinch 300px rect does NOT come back.
+    expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+
+    // A subsequent shrink is measured against the NEW baseline (700), at the
+    // stable non-1 scale, and reports occlusion normally again.
+    h.vv.height = 500;
+    h.vv.emit("resize");
+    h.frame();
+    expect(h.last().height).toBe(200); // 700 - 500, against the new baseline
+  });
+
+  test("page zoomed before focus (constant non-1 scale) reports like scale 1", () => {
+    // Regression: iOS Safari page zoom (aA menu) parks vv.scale at a constant
+    // non-1 value (e.g. 1.15) while vv dims equal layout dims. Because the guard
+    // keys off scale CHANGE from the captured baseline (not |scale - 1|), a
+    // constant zoom never freezes the engine.
+    const h = setup();
+    h.vv.scale = 1.15; // page zoom applied before any focus
+    focus(h, input()); // baselineScale captured as 1.15
+
+    const before = h.rects.length;
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300); // occlusion reported, not frozen
+    expect(h.rects.length).toBe(before + 1); // exactly one geometrychange
+    expect(h.win.pendingTimers()).toBe(0); // never entered the freeze/settle path
   });
 });
 
@@ -394,5 +446,153 @@ describe("dispose/stop tears down listeners", () => {
     expect(h.vv.totalListeners()).toBe(0);
     expect(h.win.totalListeners()).toBe(0);
     expect(h.doc.totalListeners()).toBe(0);
+  });
+});
+
+describe("post-spec: full focus/blur/refocus lifecycle (browser regression)", () => {
+  // The real-browser bug: window.setTimeout/clearTimeout, called detached from
+  // the Window receiver, throw "Illegal invocation". That threw inside the
+  // re-baseline scheduler and left #resettling stuck true, so the engine went
+  // permanently silent after the first blur. The receiver-checked fakes now
+  // reproduce the WebIDL throw, and these tests assert the engine keeps working
+  // across repeated focus/blur cycles.
+
+  test("second focus cycle still reports geometry (the case that died)", () => {
+    const h = setup();
+    h.vv.scale = 1.15; // iOS Safari page zoom parked before any focus
+
+    // Cycle 1: focus -> keyboard -> reported.
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+
+    // Blur: keyboard closes, viewport restores, rect returns to zeros.
+    h.vv.height = 844;
+    h.doc.activeElement = null;
+    h.doc.emit("focusout");
+    h.frame();
+    expect(h.last()).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+
+    // Cycle 2: REFOCUS + keyboard must report again, not stay silent.
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+
+    // open -> close -> open across the two cycles.
+    expect(h.rects.map((r) => r.height)).toEqual([300, 0, 300]);
+    expect(h.win.pendingTimers()).toBe(0); // engine not stuck in a settle
+  });
+
+  test("spurious scale wobble RESTORES the baseline (height stays 300)", () => {
+    const h = setup();
+    h.vv.scale = 1.15;
+
+    // Cycle 1 open.
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+
+    // Transient scale wobble WHILE focused: scale diverges then returns to the
+    // captured baseline value. iOS parks vv.scale transiently while the keyboard
+    // animates in; this drives requestRebaseline("scale") -> settle.
+    h.vv.scale = 1.5; // diverge from the captured baselineScale (1.15)
+    h.vv.emit("resize");
+    h.frame();
+    expect(h.win.pendingTimers()).toBeGreaterThan(0); // settle scheduled
+    const frozenLen = h.rects.length;
+
+    h.vv.scale = 1.15; // wobble returns to the parked zoom (spurious)
+    h.vv.emit("resize");
+    h.frame();
+    expect(h.rects.length).toBe(frozenLen); // still frozen until settle fires
+
+    // Settle fires: because the scale returned to the frozen baseline and the
+    // layout width did not change, the settle RESTORES the original baselines
+    // rather than re-capturing an occluded mid-animation value. So the reported
+    // height is STILL 300 (under the old always-recapture behavior it would drop
+    // to 0 and silence the session).
+    h.win.flushTimers();
+    h.frame();
+    expect(h.win.pendingTimers()).toBe(0);
+    expect(h.last().height).toBe(300); // baseline restored, not re-captured
+    expect(h.rects.every((r) => r.height > 0)).toBe(true); // never flickered to 0
+
+    // Blur: keyboard closes, viewport restores.
+    h.vv.height = 844;
+    h.doc.activeElement = null;
+    h.doc.emit("focusout");
+    h.frame();
+    expect(h.last().height).toBe(0);
+
+    // Refocus + keyboard: still reports.
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+    expect(h.win.pendingTimers()).toBe(0);
+  });
+
+  test("genuinely new stable scale re-captures a fresh baseline", () => {
+    const h = setup();
+    h.vv.scale = 1.15;
+
+    // Cycle 1 open.
+    focus(h, input());
+    shrinkViewport(h, 544);
+    expect(h.last().height).toBe(300);
+
+    // Scale diverges to a NEW value and STAYS there (a real page-zoom change,
+    // not a mid-animation wobble). Freeze + settle.
+    h.vv.scale = 1.5;
+    h.vv.emit("resize");
+    h.frame();
+    expect(h.win.pendingTimers()).toBeGreaterThan(0);
+
+    // Settle fires while scale is still 1.5 (did not return to baseline): the
+    // engine treats it as a genuine change, clears the baselines, and re-captures
+    // against the current (still-occluded, 544) geometry -> trueHeight 0.
+    h.win.flushTimers();
+    h.frame();
+    expect(h.win.pendingTimers()).toBe(0);
+    expect(h.last().height).toBe(0); // fresh baseline against occluded geometry
+
+    // A subsequent shrink is measured against the NEW baseline (544), at the new
+    // stable scale, and reports occlusion normally again.
+    shrinkViewport(h, 500);
+    expect(h.last().height).toBe(44); // 544 - 500, against the fresh baseline
+  });
+});
+
+describe("Rule 2 dual metrics (physical rect vs CSS remainder)", () => {
+  test("(i) scroll-compensated: rect reports keyboard, remainder is 0", () => {
+    // Baseline at focus: vv.height 800, offsetTop 0 (baselineBottom 800).
+    const h = setup({ innerWidth: 390, innerHeight: 800 });
+    focus(h, input());
+
+    // iOS-26 evidence: Safari shrinks vv AND scrolls it so the sum is unchanged.
+    // 507 + 293 === 800 -> keyboard fully compensated.
+    moveViewport(h, 507, 293);
+    expect(h.last().height).toBe(293); // physical keyboard -> boundingRect
+    expect(h.lastRemainder()).toBe(0); // nothing left to lift -> CSS props 0
+  });
+
+  test("(ii) WKWebView both-shrink (offsetTop stays 0): trueHeight === remainder", () => {
+    const h = setup({ innerWidth: 390, innerHeight: 800 });
+    focus(h, input());
+
+    // No scroll compensation: only vv.height shrinks, offsetTop stays 0.
+    moveViewport(h, 507, 0);
+    expect(h.last().height).toBe(293);
+    expect(h.lastRemainder()).toBe(293); // the two metrics coincide
+    expect(h.lastRemainder()).toBe(h.last().height);
+  });
+
+  test("(iii) partial compensation: rect 293, remainder 40", () => {
+    const h = setup({ innerWidth: 390, innerHeight: 800 });
+    focus(h, input());
+
+    // Browser revealed 253px of the keyboard by scrolling; 40px still uncovered.
+    moveViewport(h, 507, 253);
+    expect(h.last().height).toBe(293); // physical keyboard unchanged
+    expect(h.lastRemainder()).toBe(40); // 800 - 507 - 253
   });
 });

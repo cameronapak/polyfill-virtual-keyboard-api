@@ -73,16 +73,19 @@ export class VirtualKeyboardPolyfill extends EventTarget {
       this.#engine = new GeometryEngine({
         win: this.#win,
         doc: this.#doc,
-        onRectChange: (rect) => this.#handleRect(rect),
+        onRectChange: (rect, remainder) => this.#handleRect(rect, remainder),
       });
       this.#engine.start();
     }
   }
 
-  #handleRect(rect: RectValue): void {
+  // `rect` is the physical keyboard rectangle (boundingRect + geometrychange);
+  // `remainder` is the still-uncovered layout bottom that drives the CSS props
+  // (Rule 2 dual metrics). They can differ when the browser scroll-compensates.
+  #handleRect(rect: RectValue, remainder: number): void {
     this.#boundingRect = createDOMRectReadOnly(rect.x, rect.y, rect.width, rect.height);
     if (this.#cssProperties && this.#doc && this.#win) {
-      writeKeyboardInsetProps(this.#doc, rect, this.#win as InsetViewport);
+      writeKeyboardInsetProps(this.#doc, remainder, this.#win as InsetViewport);
     }
     this.dispatchEvent(new Event("geometrychange"));
   }

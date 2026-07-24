@@ -100,6 +100,11 @@ export class FakeWindow extends Emitter implements WindowLike {
   private timers: Timer[] = [];
   private nextTimerId = 1;
 
+  // These four are installed in the constructor as receiver-checked functions
+  // (see below). setTimeout/clearTimeout are always present; the rAF pair is
+  // installed only when `useRaf` is true.
+  setTimeout!: (cb: () => void, ms?: number) => number;
+  clearTimeout!: (handle: unknown) => void;
   requestAnimationFrame?: (cb: () => void) => number;
   cancelAnimationFrame?: (handle: number) => void;
 
@@ -116,26 +121,42 @@ export class FakeWindow extends Emitter implements WindowLike {
     this.visualViewport = init.visualViewport;
     this.navigator = init.navigator;
     this.useRaf = init.useRaf ?? true;
+
+    // Faithful WebIDL receiver semantics: on a real Window, setTimeout /
+    // clearTimeout / requestAnimationFrame / cancelAnimationFrame throw
+    // TypeError "Illegal invocation" when called detached from the Window
+    // receiver (e.g. `const f = win.setTimeout; f(cb)`). Mirroring that here
+    // makes the whole suite regression-proof against detached-call bugs like the
+    // one that left the engine permanently frozen after the first blur. Callers
+    // that use method syntax (`win.setTimeout(...)`) pass; detached callers throw.
+    const self = this;
+    const illegal = (): never => {
+      throw new TypeError("Illegal invocation");
+    };
+
+    this.setTimeout = function (this: unknown, cb: () => void, ms?: number): number {
+      if (this !== self) illegal();
+      const id = self.nextTimerId++;
+      self.timers.push({ id, cb, ms: ms ?? 0 });
+      return id;
+    };
+    this.clearTimeout = function (this: unknown, handle: unknown): void {
+      if (this !== self) illegal();
+      self.timers = self.timers.filter((t) => t.id !== handle);
+    };
+
     if (this.useRaf) {
-      this.requestAnimationFrame = (cb: () => void): number => {
-        this.rafQueue.push(cb);
-        return this.rafQueue.length;
+      this.requestAnimationFrame = function (this: unknown, cb: () => void): number {
+        if (this !== self) illegal();
+        self.rafQueue.push(cb);
+        return self.rafQueue.length;
       };
-      this.cancelAnimationFrame = (_handle: number): void => {
+      this.cancelAnimationFrame = function (this: unknown, _handle: number): void {
+        if (this !== self) illegal();
         // No-op: the engine guards flushed frames with its own `disposed` flag.
       };
     }
   }
-
-  setTimeout = (cb: () => void, ms?: number): number => {
-    const id = this.nextTimerId++;
-    this.timers.push({ id, cb, ms: ms ?? 0 });
-    return id;
-  };
-
-  clearTimeout = (handle: unknown): void => {
-    this.timers = this.timers.filter((t) => t.id !== handle);
-  };
 
   /** Run every queued animation frame (and, when rAF is disabled, timer-backed
    *  frames scheduled with delay 0). */

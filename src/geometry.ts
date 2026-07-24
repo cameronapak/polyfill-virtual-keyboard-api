@@ -62,8 +62,13 @@ export interface DocumentLike {
 export interface GeometryEngineDeps {
   win: WindowLike;
   doc: DocumentLike;
-  /** Invoked only when the reported rect actually changes. */
-  onRectChange: (rect: RectValue) => void;
+  /**
+   * Invoked when either reported metric changes. `rect` is the physical keyboard
+   * rectangle (drives boundingRect + geometrychange). `remainder` is the
+   * still-uncovered layout bottom in px (drives the CSS custom properties only).
+   * See the Rule 2 dual-metrics note.
+   */
+  onRectChange: (rect: RectValue, remainder: number) => void;
 }
 
 const ZERO_RECT: RectValue = { x: 0, y: 0, width: 0, height: 0 };
@@ -155,14 +160,23 @@ function rectsEqual(a: RectValue, b: RectValue): boolean {
 export class GeometryEngine {
   #win: WindowLike;
   #doc: DocumentLike;
-  #onRectChange: (rect: RectValue) => void;
+  #onRectChange: (rect: RectValue, remainder: number) => void;
 
   #started = false;
   #disposed = false;
 
-  /** Baseline visual-viewport bottom captured at focus; null when unfocused. */
-  #baseline: number | null = null;
+  /**
+   * Rule 2 dual baselines, captured together at focus, cleared/restored together.
+   * `baselineBottom = vv.height + vv.offsetTop` drives the CSS remainder;
+   * `baselineHeight = vv.height` drives the physical keyboard rect. Null when
+   * unfocused; `baselineHeight === null` is the "not captured" sentinel.
+   */
+  #baselineBottom: number | null = null;
+  #baselineHeight: number | null = null;
+  /** Scale captured alongside the baseline; occlusion is measured relative to it (Rule 3). */
+  #baselineScale: number | null = null;
   #lastRect: RectValue = ZERO_RECT;
+  #lastRemainder = 0;
 
   #frameScheduled = false;
   #frameHandle: unknown = null;
@@ -241,32 +255,71 @@ export class GeometryEngine {
     const widthChanged = this.#win.innerWidth !== this.#lastInnerWidth;
     this.#lastInnerWidth = this.#win.innerWidth;
     if (widthChanged) {
-      this.#requestRebaseline();
+      this.#requestRebaseline("geometry");
     }
     this.#scheduleFrame();
   };
 
   #onOrientationChange = (): void => {
     this.#lastInnerWidth = this.#win.innerWidth;
-    this.#requestRebaseline();
+    this.#requestRebaseline("geometry");
     this.#scheduleFrame();
   };
 
-  // Rule 4: re-capture the baseline after a 300 ms settle delay. Only editables
-  // (baseline set) need this; when unfocused the baseline is captured fresh on
-  // the next focus anyway.
-  #requestRebaseline(): void {
-    if (this.#baseline === null) return;
-    this.#resettling = true;
+  // Rule 3/4: re-capture the baseline after a 300 ms settle delay. `reason`
+  // distinguishes a scale-divergence freeze from a width/orientation change so
+  // the settle can tell a spurious mid-animation scale wobble (iOS parks
+  // vv.scale transiently while the keyboard animates in) from a genuine change.
+  // Only editables (baseline set) need this; when unfocused the baseline is
+  // captured fresh on the next focus anyway.
+  #requestRebaseline(reason: "scale" | "geometry"): void {
+    if (this.#baselineHeight === null) return;
     this.#cancelSettle();
+    // Snapshot the frozen state at request time. The baselines are not mutated
+    // while frozen, so repeated wobble frames that restart the settle re-capture
+    // the SAME original baselines rather than an occluded mid-animation value.
+    const frozenBottom = this.#baselineBottom;
+    const frozenHeight = this.#baselineHeight;
+    const frozenScale = this.#baselineScale;
+    const frozenWidth = this.#win.innerWidth;
     const run = () => {
       this.#settleHandle = null;
       this.#resettling = false;
-      this.#baseline = null;
+      const vv = this.#win.visualViewport;
+      const scaleNow = vv ? vv.scale : frozenScale;
+      const widthUnchanged = this.#win.innerWidth === frozenWidth;
+      const scaleStable =
+        frozenScale !== null &&
+        scaleNow !== null &&
+        Math.abs(scaleNow - frozenScale) <= PINCH_EPSILON;
+      if (reason === "scale" && scaleStable && widthUnchanged) {
+        // Rule 3 spurious wobble: scale returned to the frozen baseline and the
+        // layout did not change -> restore the original baselines untouched and
+        // let the frame report correct occlusion against them.
+        this.#baselineBottom = frozenBottom;
+        this.#baselineHeight = frozenHeight;
+        this.#baselineScale = frozenScale;
+      } else {
+        // Genuine change (scale stabilized at a new value, or a geometry
+        // request) -> clear for a fresh capture on the next frame.
+        this.#baselineBottom = null;
+        this.#baselineHeight = null;
+        this.#baselineScale = null;
+      }
       this.#scheduleFrame();
     };
-    const setTimer = this.#win.setTimeout ?? setTimeout;
-    this.#settleHandle = setTimer(run, SETTLE_DELAY_MS);
+    // Schedule FIRST; only enter the frozen state once scheduling succeeds. If
+    // scheduling ever throws, the engine must not be left frozen with no timer
+    // to release it (that was the permanent-silence bug) -- leave state
+    // consistent and let frames proceed unfrozen.
+    try {
+      this.#settleHandle = this.#setTimer(run, SETTLE_DELAY_MS);
+    } catch {
+      this.#settleHandle = null;
+      this.#resettling = false;
+      return;
+    }
+    this.#resettling = true;
   }
 
   #frame = (): void => {
@@ -276,8 +329,8 @@ export class GeometryEngine {
     // here prevents false positives when a desktop user shrinks the window with
     // an input focused. Unreadable maxTouchPoints -> assume touch-capable.
     if (!this.#isTouchCapable()) {
-      this.#baseline = null;
-      this.#report(ZERO_RECT);
+      this.#clearBaselines();
+      this.#report(ZERO_RECT, 0);
       return;
     }
 
@@ -287,13 +340,20 @@ export class GeometryEngine {
 
     if (!editable || !vv) {
       // No editable focused (or no viewport to measure) -> keyboard is not ours to report.
-      this.#baseline = null;
-      this.#report(ZERO_RECT);
+      this.#clearBaselines();
+      this.#report(ZERO_RECT, 0);
       return;
     }
 
-    // Rule 3: pinch-zoom guard. Freeze: keep last rect and the baseline.
-    if (Math.abs(vv.scale - 1) > PINCH_EPSILON) {
+    // Rule 3: pinch-zoom guard. Guard on scale CHANGE from the captured baseline,
+    // not absolute value: iOS Safari page zoom (aA menu) parks vv.scale at a
+    // constant non-1 value permanently, so freezing on `scale != 1` would disable
+    // the engine for those users. A stable non-1 scale measures fine because the
+    // baseline and current readings share the same CSS-pixel space. On a genuine
+    // pinch, freeze (keep last rect) and schedule a re-baseline so we recapture at
+    // the new stable scale once the pinch stops moving.
+    if (this.#baselineScale !== null && Math.abs(vv.scale - this.#baselineScale) > PINCH_EPSILON) {
+      this.#requestRebaseline("scale");
       return;
     }
 
@@ -302,32 +362,50 @@ export class GeometryEngine {
       return;
     }
 
-    // Rule 2: capture baseline on the unfocused -> focused transition, then hold
-    // it while focus moves between editables (keyboard stays open).
-    if (this.#baseline === null) {
-      this.#baseline = vv.height + vv.offsetTop;
+    // Rule 2/3: capture both baselines (and the scale) on the unfocused ->
+    // focused transition, then hold them while focus moves between editables
+    // (keyboard stays open).
+    if (this.#baselineHeight === null) {
+      this.#baselineBottom = vv.height + vv.offsetTop;
+      this.#baselineHeight = vv.height;
+      this.#baselineScale = vv.scale;
     }
 
-    const occlusion = Math.max(0, Math.round(this.#baseline - vv.height - vv.offsetTop));
+    // Rule 2 dual metrics:
+    //  - trueHeight: physical keyboard size, independent of any browser scroll
+    //    compensation. Drives boundingRect + geometrychange + hide detection.
+    //  - remainder: how much of the layout bottom the browser did NOT already
+    //    reveal by scrolling the visual viewport. Drives the CSS props only, so
+    //    bottom-fixed content lifts by only what is still needed.
+    const trueHeight = Math.max(0, Math.round((this.#baselineHeight ?? vv.height) - vv.height));
+    const remainder = Math.max(
+      0,
+      Math.round((this.#baselineBottom ?? vv.height + vv.offsetTop) - vv.height - vv.offsetTop),
+    );
 
-    // Rule 5: keyboard dismissed while still focused -> occlusion ~0 -> report
-    // zeros, but keep the baseline (still focused).
-    if (occlusion < HIDE_THRESHOLD_PX) {
-      this.#report(ZERO_RECT);
+    // Rule 5: keyboard dismissed while still focused -> trueHeight ~0 -> report
+    // zeros (rect and remainder), but keep the baselines (still focused).
+    if (trueHeight < HIDE_THRESHOLD_PX) {
+      this.#report(ZERO_RECT, 0);
       return;
     }
 
-    const height = occlusion;
     // boundingRect per spec: {x:0, y: innerHeight - h, width: innerWidth, height: h}.
     // x/y are documented approximations; height is the load-bearing value.
     const rect: RectValue = {
       x: 0,
-      y: this.#win.innerHeight - height,
+      y: this.#win.innerHeight - trueHeight,
       width: this.#win.innerWidth,
-      height,
+      height: trueHeight,
     };
-    this.#report(rect);
+    this.#report(rect, remainder);
   };
+
+  #clearBaselines(): void {
+    this.#baselineBottom = null;
+    this.#baselineHeight = null;
+    this.#baselineScale = null;
+  }
 
   #isTouchCapable(): boolean {
     const nav = this.#win.navigator;
@@ -337,10 +415,14 @@ export class GeometryEngine {
     return true;
   }
 
-  #report(rect: RectValue): void {
-    if (rectsEqual(rect, this.#lastRect)) return;
+  // Rule 2: fire when EITHER metric changed. The rect can hold steady while the
+  // remainder shifts (e.g. iOS scroll-compensates a keyboard that is already
+  // up), so rect equality alone no longer gates a report.
+  #report(rect: RectValue, remainder: number): void {
+    if (rectsEqual(rect, this.#lastRect) && remainder === this.#lastRemainder) return;
     this.#lastRect = rect;
-    this.#onRectChange(rect);
+    this.#lastRemainder = remainder;
+    this.#onRectChange(rect, remainder);
   }
 
   #scheduleFrame(): void {
@@ -356,8 +438,7 @@ export class GeometryEngine {
       this.#frameHandle = this.#win.requestAnimationFrame(run);
     } else {
       this.#frameUsesRaf = false;
-      const setTimer = this.#win.setTimeout ?? setTimeout;
-      this.#frameHandle = setTimer(run, 0);
+      this.#frameHandle = this.#setTimer(run, 0);
     }
   }
 
@@ -367,17 +448,37 @@ export class GeometryEngine {
     if (this.#frameUsesRaf && typeof this.#win.cancelAnimationFrame === "function") {
       this.#win.cancelAnimationFrame(this.#frameHandle as number);
     } else {
-      const clearTimer = this.#win.clearTimeout ?? clearTimeout;
-      clearTimer(this.#frameHandle as never);
+      this.#clearTimer(this.#frameHandle);
     }
     this.#frameHandle = null;
   }
 
   #cancelSettle(): void {
     if (this.#settleHandle == null) return;
-    const clearTimer = this.#win.clearTimeout ?? clearTimeout;
-    clearTimer(this.#settleHandle as never);
+    this.#clearTimer(this.#settleHandle);
     this.#settleHandle = null;
+  }
+
+  // Deferred timers MUST be invoked as methods on their owner. In real browsers,
+  // `window.setTimeout`/`clearTimeout` throw "Illegal invocation" when called
+  // detached from the Window receiver (e.g. `const f = win.setTimeout; f(cb)`),
+  // which previously left the engine permanently frozen. Method-call syntax
+  // (`this.#win.setTimeout(...)`) preserves the receiver; the global fallback is
+  // only reached when the injected win has no timer of its own.
+  #setTimer(cb: () => void, ms: number): unknown {
+    if (typeof this.#win.setTimeout === "function") {
+      return this.#win.setTimeout(cb, ms);
+    }
+    return setTimeout(cb, ms);
+  }
+
+  #clearTimer(handle: unknown): void {
+    if (handle == null) return;
+    if (typeof this.#win.clearTimeout === "function") {
+      this.#win.clearTimeout(handle);
+    } else {
+      clearTimeout(handle as never);
+    }
   }
 
   #addListener(

@@ -12,23 +12,27 @@
  *   also available if needed." Defaults are `0px` when no keyboard is shown.
  *
  * So each inset is the distance from a viewport edge to the corresponding edge
- * of the keyboard box. For a docked keyboard with `overlaysContent = true`,
- * described by boundingRect `{x:0, y: innerHeight - h, width: innerWidth,
- * height: h}`:
+ * of the keyboard box. The CSS props describe a bottom-docked band of height
+ * `remainder`:
  *
- *   keyboard-inset-top    = y                  ( = innerHeight - h )
- *   keyboard-inset-right  = innerWidth  - (x + width)   = 0
- *   keyboard-inset-bottom = innerHeight - (y + height)  = 0
- *   keyboard-inset-left   = x                            = 0
- *   keyboard-inset-width  = width               ( = innerWidth )
- *   keyboard-inset-height = height              ( = h )
+ *   keyboard-inset-top    = innerHeight - remainder
+ *   keyboard-inset-right  = 0
+ *   keyboard-inset-bottom = 0
+ *   keyboard-inset-left   = 0
+ *   keyboard-inset-width  = innerWidth
+ *   keyboard-inset-height = remainder
  *
- * Consistency: top + height + bottom === innerHeight (Rule 7 unit invariant).
- * When the keyboard is hidden (empty rect) all six values are `0px`, matching
- * the native defaults.
+ * When `remainder` is 0 all six values are `0px`, matching the native defaults.
+ *
+ * DELIBERATE, DOCUMENTED DIVERGENCE (Rule 2 dual metrics): the CSS props are
+ * driven by `remainder` (the layout bottom the browser did NOT already reveal
+ * by scrolling the visual viewport), NOT by `boundingRect.height`. Natively the
+ * env vars mirror the boundingRect exactly; here they can differ. Rationale:
+ * on iOS the browser often scroll-compensates part or all of the keyboard, so
+ * lifting bottom-fixed content by the full physical keyboard height would
+ * double-compensate. `remainder` lifts CSS by only what is still needed, while
+ * `boundingRect` keeps reporting the true physical keyboard size to JS.
  */
-
-import type { RectValue } from "./geometry.js";
 
 export interface InsetViewport {
   readonly innerWidth: number;
@@ -56,35 +60,36 @@ export interface StyleTarget {
 const INSET_PROPERTIES = ["top", "right", "bottom", "left", "width", "height"] as const;
 
 /**
- * Derive the six keyboard insets from a boundingRect and the viewport size.
- * An empty rect (hidden keyboard) yields all zeros, matching native defaults.
+ * Derive the six keyboard insets from the `remainder` (uncovered layout bottom
+ * in px) and the viewport size. A remainder of 0 yields all zeros, matching
+ * native defaults.
  */
-export function computeInsets(rect: RectValue, viewport: InsetViewport): KeyboardInsets {
-  if (rect.width === 0 && rect.height === 0) {
+export function computeInsets(remainder: number, viewport: InsetViewport): KeyboardInsets {
+  if (remainder <= 0) {
     return { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 };
   }
   return {
-    top: rect.y,
-    right: Math.max(0, viewport.innerWidth - (rect.x + rect.width)),
-    bottom: Math.max(0, viewport.innerHeight - (rect.y + rect.height)),
-    left: rect.x,
-    width: rect.width,
-    height: rect.height,
+    top: Math.max(0, viewport.innerHeight - remainder),
+    right: 0,
+    bottom: 0,
+    left: 0,
+    width: viewport.innerWidth,
+    height: remainder,
   };
 }
 
 /**
  * Write `--keyboard-inset-{top,right,bottom,left,width,height}` (px strings) to
- * the document element on every rect change.
+ * the document element whenever the remainder changes.
  */
 export function writeKeyboardInsetProps(
   doc: StyleTarget,
-  rect: RectValue,
+  remainder: number,
   viewport: InsetViewport,
 ): void {
   const style = doc.documentElement?.style;
   if (!style) return;
-  const insets = computeInsets(rect, viewport);
+  const insets = computeInsets(remainder, viewport);
   for (const prop of INSET_PROPERTIES) {
     style.setProperty(`--keyboard-inset-${prop}`, `${insets[prop]}px`);
   }
