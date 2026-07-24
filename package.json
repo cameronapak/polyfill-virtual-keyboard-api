@@ -73,5 +73,13 @@
     "happy-dom": "^20.11.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cameronapak/polyfill-virtual-keyboard-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cameronapak/polyfill-virtual-keyboard-api/issues"
+  },
+  "homepage": "https://github.com/cameronapak/polyfill-virtual-keyboard-api#readme"
 }
