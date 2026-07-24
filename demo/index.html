@@ -165,17 +165,77 @@
         top: 8px;
         right: 8px;
         width: min(320px, calc(100vw - 16px));
-        max-height: 45vh;
-        overflow-y: auto;
         background: color-mix(in srgb, var(--surface) 92%, transparent);
         border: 1px solid var(--line);
         border-radius: 12px;
-        padding: 10px 12px;
         font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
         box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
         backdrop-filter: blur(8px);
         z-index: 10;
+        overflow: hidden; /* clip head/body to the rounded corners */
       }
+
+      /* Drag handle + collapse control. This is the ONLY element with
+         touch-action:none so page scrolling elsewhere is unaffected. */
+      .readout-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--line);
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        font: 600 11px/1.2 -apple-system, sans-serif;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .readout-head:active {
+        cursor: grabbing;
+      }
+      .readout-title {
+        flex: 1;
+        white-space: nowrap;
+      }
+      .readout .pill-height {
+        font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--ink);
+        text-transform: none;
+        letter-spacing: 0;
+        white-space: nowrap;
+      }
+      .readout-toggle {
+        flex: none;
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 3px 8px;
+        font: 600 11px/1 -apple-system, sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+      }
+      .readout-body {
+        padding: 10px 12px;
+        max-height: 45vh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      /* Collapsed: shrink to a compact pill that still shows kb height. */
+      .readout.collapsed {
+        width: auto;
+      }
+      .readout.collapsed .readout-head {
+        border-bottom: none;
+      }
+      .readout.collapsed .readout-body {
+        display: none;
+      }
+
       .readout h2 {
         margin: 0 0 6px;
         font: 600 12px/1.2 -apple-system, sans-serif;
@@ -256,19 +316,34 @@
       </form>
     </div>
 
-    <aside class="readout" aria-live="polite">
-      <h2>boundingRect</h2>
-      <pre id="rect">{}</pre>
-      <dl>
-        <dt>overlaysContent</dt>
-        <dd id="overlays">-</dd>
-        <dt>isPolyfill</dt>
-        <dd id="poly">-</dd>
-        <dt>events</dt>
-        <dd id="count">0</dd>
-      </dl>
-      <h2>event log</h2>
-      <div class="log" id="log"></div>
+    <aside class="readout" id="readout">
+      <div class="readout-head" id="readoutHead">
+        <span class="readout-title">readout</span>
+        <span class="pill-height" id="pillHeight">kb 0px</span>
+        <button
+          type="button"
+          class="readout-toggle"
+          id="readoutToggle"
+          aria-expanded="true"
+          aria-controls="readoutBody"
+        >
+          hide
+        </button>
+      </div>
+      <div class="readout-body" id="readoutBody" aria-live="polite">
+        <h2>boundingRect</h2>
+        <pre id="rect">{}</pre>
+        <dl>
+          <dt>overlaysContent</dt>
+          <dd id="overlays">-</dd>
+          <dt>isPolyfill</dt>
+          <dd id="poly">-</dd>
+          <dt>events</dt>
+          <dd id="count">0</dd>
+        </dl>
+        <h2>event log</h2>
+        <div class="log" id="log"></div>
+      </div>
     </aside>
 
     <script type="module">
@@ -284,6 +359,7 @@
       const logEl = document.getElementById("log");
       const modeEl = document.getElementById("mode");
       const messages = document.getElementById("messages");
+      const pillEl = document.getElementById("pillHeight");
 
       let count = 0;
 
@@ -317,6 +393,7 @@
           1,
         );
         overlaysEl.textContent = String(vk.overlaysContent);
+        pillEl.textContent = "kb " + Math.round(r.height) + "px";
       }
 
       function log(msg) {
@@ -368,6 +445,90 @@
         plain.value = "";
         plain.focus();
       });
+
+      // ----- Readout panel: collapse + drag -------------------------------
+      const readout = document.getElementById("readout");
+      const readoutHead = document.getElementById("readoutHead");
+      const readoutToggle = document.getElementById("readoutToggle");
+
+      // Collapse toggle. Works with mouse and touch (it's a real <button>, so
+      // a tap fires click even though the handle has touch-action:none).
+      readoutToggle.addEventListener("click", () => {
+        const collapsed = readout.classList.toggle("collapsed");
+        readoutToggle.setAttribute("aria-expanded", String(!collapsed));
+        readoutToggle.textContent = collapsed ? "show" : "hide";
+        // Re-clamp: collapsing changes the panel size, so a panel dragged to an
+        // edge could otherwise end up partly offscreen.
+        clampIntoView();
+      });
+
+      // Keep the panel inside the current visual viewport. Uses live
+      // innerWidth/innerHeight so it stays correct when the keyboard opens.
+      function clampIntoView() {
+        if (readout.style.left === "") return; // still at its CSS default spot
+        const rect = readout.getBoundingClientRect();
+        const maxLeft = Math.max(0, window.innerWidth - rect.width);
+        const maxTop = Math.max(0, window.innerHeight - rect.height);
+        const left = Math.min(Math.max(parseFloat(readout.style.left), 0), maxLeft);
+        const top = Math.min(Math.max(parseFloat(readout.style.top), 0), maxTop);
+        readout.style.left = left + "px";
+        readout.style.top = top + "px";
+      }
+
+      // Pointer-events drag: one code path for mouse + touch.
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+
+      readoutHead.addEventListener("pointerdown", (e) => {
+        // Let the toggle button handle its own taps.
+        if (e.target.closest(".readout-toggle")) return;
+
+        const rect = readout.getBoundingClientRect();
+        startLeft = rect.left;
+        startTop = rect.top;
+        startX = e.clientX;
+        startY = e.clientY;
+
+        // Switch from the CSS top/right anchor to explicit left/top so drag
+        // math is unambiguous.
+        readout.style.left = startLeft + "px";
+        readout.style.top = startTop + "px";
+        readout.style.right = "auto";
+        readout.style.bottom = "auto";
+
+        dragging = true;
+        readoutHead.setPointerCapture(e.pointerId);
+      });
+
+      readoutHead.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const rect = readout.getBoundingClientRect();
+        const maxLeft = Math.max(0, window.innerWidth - rect.width);
+        const maxTop = Math.max(0, window.innerHeight - rect.height);
+        let left = startLeft + (e.clientX - startX);
+        let top = startTop + (e.clientY - startY);
+        left = Math.min(Math.max(left, 0), maxLeft);
+        top = Math.min(Math.max(top, 0), maxTop);
+        readout.style.left = left + "px";
+        readout.style.top = top + "px";
+      });
+
+      function endDrag(e) {
+        if (!dragging) return;
+        dragging = false;
+        try {
+          readoutHead.releasePointerCapture(e.pointerId);
+        } catch (_) {}
+      }
+      readoutHead.addEventListener("pointerup", endDrag);
+      readoutHead.addEventListener("pointercancel", endDrag);
+
+      // If the viewport changes (rotation, keyboard open/close), keep the
+      // panel on-screen.
+      window.addEventListener("resize", clampIntoView);
     </script>
   </body>
 </html>
