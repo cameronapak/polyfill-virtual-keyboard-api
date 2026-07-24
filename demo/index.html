@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>VirtualKeyboard API polyfill - demo</title>
+
+    <!--
+      This demo loads the built side-effect entry, which installs
+      navigator.virtualKeyboard (if the browser lacks it) and starts writing the
+      --keyboard-inset-* custom properties.
+
+      To run it:
+        1. bun run build          # produces dist/auto.js (and the other entries)
+        2. bunx serve .           # serve the REPO ROOT (not the demo folder)
+        3. open http://<your-lan-ip>:3000/demo/ on a phone
+
+      A real device is required to see the keyboard geometry: desktop browsers
+      report zeros by design (no touch keyboard, see Rule 4b).
+    -->
+    <script type="module" src="../dist/auto.js"></script>
+
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f2f2f7;
+        --surface: #ffffff;
+        --ink: #1c1c1e;
+        --muted: #6b6b70;
+        --accent: #0a84ff;
+        --line: #d8d8dc;
+        --bubble-them: #e9e9eb;
+        --bubble-me: #0a84ff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #000000;
+          --surface: #1c1c1e;
+          --ink: #f5f5f7;
+          --muted: #9a9aa0;
+          --accent: #0a84ff;
+          --line: #2c2c2e;
+          --bubble-them: #2c2c2e;
+          --bubble-me: #0a84ff;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        overscroll-behavior: none;
+      }
+
+      /*
+        The whole app is a full-height flex column. The composer is pinned to the
+        bottom; when the virtual keyboard is up we lift it by the keyboard height.
+
+        The fallback chain does the work:
+          env(keyboard-inset-height, var(--keyboard-inset-height, 0px))
+          - native VirtualKeyboard browsers resolve env() directly
+          - polyfilled browsers fall back to the --keyboard-inset-height custom
+            property this page's script keeps updated
+          - with no JS at all, the final 0px applies
+      */
+      .app {
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+      }
+
+      header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+        font-weight: 600;
+      }
+      header small {
+        display: block;
+        font-weight: 400;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+
+      .messages {
+        flex: 1;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .bubble {
+        max-width: 78%;
+        padding: 9px 13px;
+        border-radius: 18px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+      }
+      .them {
+        align-self: flex-start;
+        background: var(--bubble-them);
+        color: var(--ink);
+        border-bottom-left-radius: 5px;
+      }
+      .me {
+        align-self: flex-end;
+        background: var(--bubble-me);
+        color: #fff;
+        border-bottom-right-radius: 5px;
+      }
+
+      .composer {
+        position: sticky;
+        bottom: env(keyboard-inset-height, var(--keyboard-inset-height, 0px));
+        background: var(--surface);
+        border-top: 1px solid var(--line);
+        padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+        transition: bottom 120ms ease-out;
+      }
+      .composer .field {
+        flex: 1;
+        min-height: 38px;
+        max-height: 120px;
+        overflow-y: auto;
+        padding: 9px 12px;
+        border: 1px solid var(--line);
+        border-radius: 19px;
+        background: var(--bg);
+        color: var(--ink);
+        font: inherit;
+      }
+      .composer .field:empty::before {
+        content: attr(data-placeholder);
+        color: var(--muted);
+      }
+      .composer input.field {
+        min-height: 38px;
+      }
+      .composer button {
+        height: 38px;
+        padding: 0 16px;
+        border: none;
+        border-radius: 19px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+      }
+
+      .readout {
+        position: fixed;
+        top: 8px;
+        right: 8px;
+        width: min(320px, calc(100vw - 16px));
+        max-height: 45vh;
+        overflow-y: auto;
+        background: color-mix(in srgb, var(--surface) 92%, transparent);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(8px);
+        z-index: 10;
+      }
+      .readout h2 {
+        margin: 0 0 6px;
+        font: 600 12px/1.2 -apple-system, sans-serif;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .readout dl {
+        margin: 0 0 8px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+      }
+      .readout dt {
+        color: var(--muted);
+      }
+      .readout dd {
+        margin: 0;
+        text-align: right;
+      }
+      .readout pre {
+        margin: 0 0 8px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .log {
+        border-top: 1px solid var(--line);
+        padding-top: 6px;
+        max-height: 22vh;
+        overflow-y: auto;
+      }
+      .log .row {
+        display: flex;
+        gap: 8px;
+      }
+      .log .t {
+        color: var(--muted);
+        flex: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="app">
+      <header>
+        VirtualKeyboard API polyfill
+        <small id="mode">detecting support...</small>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="bubble them">Focus a field below. The composer lifts to sit above the keyboard.</div>
+        <div class="bubble them">The panel top-right shows boundingRect, overlaysContent, the event count, and a timestamped log.</div>
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <!-- contenteditable test field -->
+        <div
+          class="field"
+          id="editable"
+          contenteditable="true"
+          role="textbox"
+          aria-label="Message (contenteditable)"
+          data-placeholder="contenteditable message"
+        ></div>
+        <button type="submit">Send</button>
+      </form>
+
+      <form class="composer" id="composer2" autocomplete="off" style="border-top: none; padding-top: 0">
+        <!-- plain input test field -->
+        <input
+          class="field"
+          id="plain"
+          type="text"
+          aria-label="Message (plain input)"
+          placeholder="plain input message"
+        />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+
+    <aside class="readout" aria-live="polite">
+      <h2>boundingRect</h2>
+      <pre id="rect">{}</pre>
+      <dl>
+        <dt>overlaysContent</dt>
+        <dd id="overlays">-</dd>
+        <dt>isPolyfill</dt>
+        <dd id="poly">-</dd>
+        <dt>events</dt>
+        <dd id="count">0</dd>
+      </dl>
+      <h2>event log</h2>
+      <div class="log" id="log"></div>
+    </aside>
+
+    <script type="module">
+      // The /auto entry (loaded above) installs navigator.virtualKeyboard when
+      // the browser has no native implementation. By the time this module runs,
+      // it is present either way.
+      const vk = navigator.virtualKeyboard;
+
+      const rectEl = document.getElementById("rect");
+      const overlaysEl = document.getElementById("overlays");
+      const polyEl = document.getElementById("poly");
+      const countEl = document.getElementById("count");
+      const logEl = document.getElementById("log");
+      const modeEl = document.getElementById("mode");
+      const messages = document.getElementById("messages");
+
+      let count = 0;
+
+      const isPolyfill = Boolean(vk && vk.isPolyfill);
+      polyEl.textContent = String(isPolyfill);
+      modeEl.textContent = vk
+        ? isPolyfill
+          ? "using polyfill (visualViewport-derived geometry)"
+          : "using native VirtualKeyboard API"
+        : "VirtualKeyboard API unavailable";
+
+      function now() {
+        const d = new Date();
+        return (
+          String(d.getHours()).padStart(2, "0") +
+          ":" +
+          String(d.getMinutes()).padStart(2, "0") +
+          ":" +
+          String(d.getSeconds()).padStart(2, "0") +
+          "." +
+          String(d.getMilliseconds()).padStart(3, "0")
+        );
+      }
+
+      function render() {
+        if (!vk) return;
+        const r = vk.boundingRect;
+        rectEl.textContent = JSON.stringify(
+          { x: r.x, y: r.y, width: r.width, height: r.height },
+          null,
+          1,
+        );
+        overlaysEl.textContent = String(vk.overlaysContent);
+      }
+
+      function log(msg) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const t = document.createElement("span");
+        t.className = "t";
+        t.textContent = now();
+        const m = document.createElement("span");
+        m.textContent = msg;
+        row.append(t, m);
+        logEl.prepend(row);
+        while (logEl.childElementCount > 40) logEl.lastElementChild.remove();
+      }
+
+      if (vk) {
+        render();
+        vk.addEventListener("geometrychange", () => {
+          count += 1;
+          countEl.textContent = String(count);
+          const h = vk.boundingRect.height;
+          log(h > 0 ? "geometrychange  height=" + Math.round(h) + "px" : "geometrychange  hidden");
+          render();
+        });
+      }
+
+      // Wire the two composers so the demo behaves like a chat app.
+      function addMessage(text) {
+        if (!text) return;
+        const b = document.createElement("div");
+        b.className = "bubble me";
+        b.textContent = text;
+        messages.append(b);
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      const editable = document.getElementById("editable");
+      document.getElementById("composer").addEventListener("submit", (e) => {
+        e.preventDefault();
+        addMessage(editable.textContent.trim());
+        editable.textContent = "";
+        editable.focus();
+      });
+
+      const plain = document.getElementById("plain");
+      document.getElementById("composer2").addEventListener("submit", (e) => {
+        e.preventDefault();
+        addMessage(plain.value.trim());
+        plain.value = "";
+        plain.focus();
+      });
+    </script>
+  </body>
+</html>
