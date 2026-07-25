@@ -127,6 +127,8 @@ Native `env()` wins on Chromium; polyfilled browsers use the custom property; if
 
 ## Known limitations
 
+- **Chrome-visible Safari, layout bottom ≠ band bottom**: remainder measures occlusion of the pre-keyboard visible band (dual-metric baseline at `focusin`), not distance from the layout viewport bottom. W3C VirtualKeyboard insets are defined vs the document layout viewport; this polyfill’s CSS channel intentionally uses Safari dual-metric remainder. Fixed UI anchored with `bottom: env(keyboard-inset-height, var(--keyboard-inset-height))` can **over-lift** in document-scrolling apps when browser chrome is visible — the layout viewport bottom (`clientHeight`) sits below the visible band. Authors in that layout should use the measured fixed-probe escape hatch ([README](README.md#safari-chat-ui-recipe)) or adopt the Recipe shell.
+- **Baseline at `focusin` vs chrome change**: baseline is captured at editable focus, before the keyboard animates. If browser chrome show/hide shifts the visible band after baseline capture, remainder may be stale until refocus. **Unconfirmed on device**; v1 does **not** implement geometry-settle rebaseline for this case (device-confirm later).
 - `overlaysContent = false` not emulated
 - `show()` best-effort only (iOS user-gesture restriction)
 - Geometry commits after height stability (+ animation), so updates lag Chrome-during-animation (perceived up to ~500 ms)

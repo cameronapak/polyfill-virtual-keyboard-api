@@ -2,6 +2,14 @@
 
 Safari chat-UI readiness: keep a fixed/sticky bottom composer above the keyboard without inventing a second geometry engine.
 
+## Fit and incompatibility
+
+**Requires** an overflow-hidden shell with an **inner scroller** (`html, body { overflow: hidden }`; only the messages region scrolls). See [Required CSS shell](#required-css-shell).
+
+**Incompatible with document-scrolling / window-virtualized apps** — layouts where `window` or `document` is the scroll container (infinite lists, full-page editors, marketing pages). Those apps should use geometry + CSS from the main README, or the [measured fixed-probe escape hatch](../README.md#safari-chat-ui-recipe) — not this Recipe.
+
+The **scroll safety net** (snap `scrollTarget` to top while keyboard height &gt; 0) is a **chat-composer assumption**: it prevents globe-key / mode-switch scroll jumps. It is **wrong** for editors or long forms where the user must scroll while typing.
+
 This is **not** the VirtualKeyboard polyfill. Pre-lift height follows the **Keyboard insets height channel** (`--keyboard-inset-height` / remainder) — the same number shell CSS uses — then falls back to `boundingRect.height`. Layout shell, pre-lift, and focus timing are Recipe concerns; do not re-measure `visualViewport`.
 
 Polyfill contract: [`SPEC.md`](../SPEC.md).
@@ -75,7 +83,7 @@ dispose();
 | Focus | `focus({ preventScroll: true })` + `preventDefault` on field `mousedown` |
 | Gated bar controls | On `controls`, pre-lift only when height &gt; 0 (no phantom lift when keyboard closed) |
 | Height cache | `geometrychange` → re-read height (inset channel first, then `boundingRect`); **do not** re-measure `visualViewport` |
-| Scroll safety net | While height &gt; 0, snap `scrollTarget` to top on scroll (globe key / mode switch has no DOM pre-lift) |
+| Scroll safety net | While height &gt; 0, snap `scrollTarget` to top on scroll (globe key / mode switch has no DOM pre-lift). **Chat-composer only** — disable or omit for apps that must scroll while the keyboard is open |
 
 Side-effect-free import: does **not** install the polyfill. Zero framework deps.
 
