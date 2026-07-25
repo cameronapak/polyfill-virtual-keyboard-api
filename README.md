@@ -109,6 +109,8 @@ Requires `cssProperties: true` (or `/auto`). On Chromium with native insets, pre
 
 ## Safari chat UI (Recipe)
 
+**Requires** an overflow-hidden shell with an inner scroller — **incompatible with document-scrolling / window-virtualized apps**. Fit and shell CSS: [`docs/ios-composer.md`](docs/ios-composer.md).
+
 Fixed bottom composers need more than geometry: a layout shell, pre-lift on `mousedown`, and `focus({ preventScroll: true })`. That lives in a separate entry — not installed by `/auto`:
 
 ```js
