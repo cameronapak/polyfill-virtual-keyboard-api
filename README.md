@@ -31,7 +31,11 @@ navigator.virtualKeyboard.addEventListener("geometrychange", () => {
 });
 ```
 
-Import-safe in Node/SSR: outside a browser it does nothing. On Chromium, set `navigator.virtualKeyboard.overlaysContent = true` for overlay parity with Safari.
+Import-safe in Node/SSR: outside a browser it does nothing.
+
+## overlaysContent on Chromium
+
+Chromium ships native VirtualKeyboard but does not enable overlay mode by default. Set `navigator.virtualKeyboard.overlaysContent = true` so native `env(keyboard-inset-*)` matches Safari’s overlay model (layout viewport stays fixed; keyboard draws over content). `/auto` does **not** set this flag — authors opt in explicitly. On Safari / Firefox / WKWebView the polyfill stores the flag; `true` is a no-op and `false` is unsupported.
 
 ## Ponyfill usage
 
@@ -81,9 +85,31 @@ bottom: env(keyboard-inset-height, var(--keyboard-inset-height, 0px));
 
 Native `env()` wins on Chromium; polyfilled browsers use the custom property; if JS never ran, the final fallback applies.
 
-**Dual metrics:** `boundingRect` reports **trueHeight** (physical OSK). CSS insets use **remainder** (lift still needed after Safari scroll compensation), so bottom-fixed UI is not double-lifted. On WKWebView the two usually coincide. Details in [SPEC](SPEC.md).
+**Dual metrics:** W3C VirtualKeyboard defines `boundingRect` and insets relative to the document layout viewport. This polyfill’s CSS channel uses **remainder** — occlusion of the pre-keyboard **visible band** (Safari dual-metric baseline), not layout-viewport math. `boundingRect` reports **trueHeight** (physical OSK). CSS insets use **remainder** (lift still needed after Safari scroll compensation), so bottom-fixed UI is not double-lifted. On WKWebView the two usually coincide. **Remainder is internal** — not exposed on `navigator.virtualKeyboard`; read the CSS channel instead (below). Details in [SPEC](SPEC.md).
+
+### Reading inset height from JS (transforms)
+
+Use the same `--keyboard-inset-height` value CSS uses — do not derive lift from `boundingRect.height` on dual-metric engines:
+
+```js
+function getKeyboardInsetHeight() {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--keyboard-inset-height")
+    .trim();
+  return raw ? parseFloat(raw) : 0;
+}
+
+// Re-read after geometrychange when driving transforms:
+navigator.virtualKeyboard.addEventListener("geometrychange", () => {
+  composer.style.transform = `translateY(-${getKeyboardInsetHeight()}px)`;
+});
+```
+
+Requires `cssProperties: true` (or `/auto`). On Chromium with native insets, prefer `env(keyboard-inset-height)` in CSS; for JS-driven transforms, read computed `env()` indirectly via the same custom property if you mirror it, or measure layout (probe below).
 
 ## Safari chat UI (Recipe)
+
+**Requires** an overflow-hidden shell with an inner scroller — **incompatible with document-scrolling / window-virtualized apps**. Fit and shell CSS: [`docs/ios-composer.md`](docs/ios-composer.md).
 
 Fixed bottom composers need more than geometry: a layout shell, pre-lift on `mousedown`, and `focus({ preventScroll: true })`. That lives in a separate entry — not installed by `/auto`:
 
@@ -93,6 +119,25 @@ import { attachIosComposer } from "virtual-keyboard-api-polyfill/ios-composer";
 ```
 
 Docs: [`docs/ios-composer.md`](docs/ios-composer.md). Optional shell CSS: [`docs/ios-composer.shell.css`](docs/ios-composer.shell.css). Demo: `demo/index.html`.
+
+**Recipe CSS assumption (chrome-visible Safari):** `bottom: env(keyboard-inset-height, var(--keyboard-inset-height))` assumes the overflow-hidden shell from the Recipe — fixed chrome’s containing block bottom aligns with the pre-keyboard visible band. In **document-scrolling** apps where browser chrome is visible and layout viewport bottom (`clientHeight`) ≠ visible band bottom, remainder can **over-lift** (e.g. ~92 px): remainder answers band occlusion while `position: fixed; bottom: 0` tracks the layout viewport. The correct lift there is `clientHeight - visualViewport.height - visualViewport.offsetTop`, not remainder alone.
+
+**Measured fixed-probe escape hatch:** when you cannot adopt the Recipe shell, anchor lift to layout viewport bottom with a zero-size probe:
+
+```html
+<div id="vk-probe" aria-hidden="true" style="position:fixed;bottom:0;left:0;width:0;height:0;pointer-events:none"></div>
+```
+
+```js
+function measuredLiftPx() {
+  const probe = document.getElementById("vk-probe");
+  const vv = window.visualViewport;
+  if (!probe || !vv) return 0;
+  return Math.max(0, probe.getBoundingClientRect().bottom - vv.height);
+}
+```
+
+Use this for `transform` / `bottom` in document-scrolling layouts; keep remainder-driven CSS for Recipe shells.
 
 ## Limitations
 

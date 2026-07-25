@@ -41,3 +41,7 @@ Moving a fixed composer to its keyboard-open position before focus completes, so
 ## Overlays content
 
 The VirtualKeyboard API flag meaning the UA leaves layout/visual viewports alone and the keyboard draws over the page. Safari's default behavior already matches this; the Polyfill stores the flag but cannot emulate the opposite (`false`).
+
+## Measured fixed probe
+
+A zero-size `position: fixed; bottom: 0` element used to read layout-viewport bottom in document-scrolling apps. Lift is `probe.getBoundingClientRect().bottom - visualViewport.height`. Escape hatch when remainder-driven CSS over-lifts because layout viewport bottom ≠ visible band bottom.
